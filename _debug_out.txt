@@ -1,4 +1,0 @@
-report is None: False
-probes_sent: 1
-probes_invalid: 0
-signals: 1
