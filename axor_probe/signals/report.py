@@ -60,11 +60,15 @@ class ProbeReport:
     ) -> ProbeReport:
         scored = [s for s in drift_signals if s.drift_score is not None]
 
-        max_drift = max((s.drift_score for s in scored), default=0.0)  # type: ignore[type-var]
+        scored_scores: list[float] = [d for d in (s.drift_score for s in scored) if d is not None]
+        max_drift = max(scored_scores, default=0.0)
 
         drift_by_type: dict[ProbeType, float] = {}
         for s in scored:
-            drift_by_type[s.probe_type] = max(drift_by_type.get(s.probe_type, 0.0), s.drift_score)  # type: ignore[arg-type]
+            score = s.drift_score
+            if score is None:
+                continue
+            drift_by_type[s.probe_type] = max(drift_by_type.get(s.probe_type, 0.0), score)
 
         drift_by_category: dict[DivergenceCategory, int] = {}
         for s in drift_signals:

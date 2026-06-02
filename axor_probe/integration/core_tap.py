@@ -29,16 +29,15 @@ Two pieces:
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from axor_probe.executor.snapshot import StateSnapshot
 from axor_probe.pipeline.orchestrator import ProbePipeline, ProbeScheduler, RuntimeEvent
 from axor_probe.shadow.context import CanonicalizedContextSummary
 
-if TYPE_CHECKING:
-    # Reference only — never imported at runtime (P-34). The real object is
-    # axor_core.contracts.observation.SessionContextView, attached structurally.
-    from axor_core.contracts.observation import SessionContextView
+# axor-core's real type is axor_core.contracts.observation.SessionContextView; we
+# never import it (P-34) and type against the structural Protocol below instead,
+# so static analysis needs no axor-core install.
 
 
 @runtime_checkable
@@ -84,7 +83,7 @@ class CoreContextTap:
         """Most recently observed SessionContextView, or None if none yet."""
         return self._latest_view
 
-    async def on_context_event(self, view: SessionContextView) -> None:
+    async def on_context_event(self, view: _SessionContextViewLike) -> None:
         """Receive a context event from core. Returns promptly (never blocks).
 
         Stores the view for the SnapshotFactory, then schedules a probe cycle
