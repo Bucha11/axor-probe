@@ -68,7 +68,7 @@ class DriftAccumulator:
         ]
         frequency = len(high_drift) / len(scored)
 
-        scores = [r.drift_score for r in scored]  # type: ignore[misc]
+        scores: list[float] = [s for s in (r.drift_score for r in scored) if s is not None]
         if len(scores) >= 3:
             n = len(scores)
             x_mean = (n - 1) / 2

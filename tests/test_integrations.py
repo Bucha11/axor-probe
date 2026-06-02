@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import time
 import uuid
+
+import pytest
 from unittest.mock import AsyncMock
 
 
@@ -20,6 +22,18 @@ from axor_probe.integration.core import CoreDriftSink, notify_core
 from axor_probe.integration.sentinel import SentinelSessionSink, emit_to_sentinel
 from axor_probe.probes.schema import ProbeType
 from axor_probe.signals.drift import DriftAction, DriftSignal
+
+
+def _probe_bridge_or_skip():
+    """Import axor-sentinel's ProbeTaintBridge from the sibling checkout, or skip
+    when axor-sentinel is not available (e.g. isolated CI for this repo)."""
+    import sys
+    sys.path.insert(0, "axor-sentinel")
+    try:
+        from axor_sentinel.integration.probe_bridge import ProbeTaintBridge
+    except ImportError:
+        pytest.skip("axor-sentinel not available")
+    return ProbeTaintBridge
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -121,9 +135,7 @@ async def test_emit_sentinel_silent_for_log_only() -> None:
 # ── ProbeTaintBridge ──────────────────────────────────────────────────────────
 
 async def test_probe_taint_bridge_buffers_sessions() -> None:
-    import sys
-    sys.path.insert(0, "axor-sentinel")
-    from axor_sentinel.integration.probe_bridge import ProbeTaintBridge
+    ProbeTaintBridge = _probe_bridge_or_skip()
 
     bridge = ProbeTaintBridge()
     await bridge.mark_session_tainted("sess-1", "agent-1")
@@ -133,9 +145,7 @@ async def test_probe_taint_bridge_buffers_sessions() -> None:
 
 
 async def test_probe_taint_bridge_drain_returns_and_clears() -> None:
-    import sys
-    sys.path.insert(0, "axor-sentinel")
-    from axor_sentinel.integration.probe_bridge import ProbeTaintBridge
+    ProbeTaintBridge = _probe_bridge_or_skip()
 
     bridge = ProbeTaintBridge()
     await bridge.mark_session_tainted("sess-1", "agent-1")
@@ -150,9 +160,7 @@ async def test_probe_taint_bridge_drain_returns_and_clears() -> None:
 
 
 async def test_probe_taint_bridge_satisfies_sentinel_sink_protocol() -> None:
-    import sys
-    sys.path.insert(0, "axor-sentinel")
-    from axor_sentinel.integration.probe_bridge import ProbeTaintBridge
+    ProbeTaintBridge = _probe_bridge_or_skip()
 
     bridge = ProbeTaintBridge()
     # Protocol structural check — mark_session_tainted must be callable
@@ -162,9 +170,7 @@ async def test_probe_taint_bridge_satisfies_sentinel_sink_protocol() -> None:
 # ── End-to-end wiring: signal → sentinel bridge ───────────────────────────────
 
 async def test_signal_flows_to_sentinel_via_emit() -> None:
-    import sys
-    sys.path.insert(0, "axor-sentinel")
-    from axor_sentinel.integration.probe_bridge import ProbeTaintBridge
+    ProbeTaintBridge = _probe_bridge_or_skip()
 
     bridge = ProbeTaintBridge()
     await emit_to_sentinel(_signal(DriftAction.RESTRICTED_MODE), bridge)
