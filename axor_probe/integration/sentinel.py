@@ -52,14 +52,16 @@ async def emit_to_sentinel(signal: DriftSignal, sink: SentinelSessionSink) -> No
     """
     Emits a behavioral taint notification to axor-sentinel when drift is significant.
 
-    Fires for ELEVATED_REVIEW and RESTRICTED_MODE only.
-    LOG_ONLY signals do not cross the sentinel boundary.
-    """
-    action = signal.recommended_action
-    if action is DriftAction.RESTRICTED_MODE and signal.calibration_status != "CALIBRATED":
-        action = DriftAction.ELEVATED_REVIEW
+    Fires for ELEVATED_REVIEW and RESTRICTED_MODE only; LOG_ONLY does not cross
+    the sentinel boundary.
 
-    if action in (DriftAction.ELEVATED_REVIEW, DriftAction.RESTRICTED_MODE):
+    No calibration downgrade is applied here: the sink records a single binary
+    fact (had_taint=True) and does not distinguish severity, so collapsing
+    RESTRICTED_MODE to ELEVATED_REVIEW would have no observable effect. The
+    calibration gate already lives upstream — DriftAction.from_longitudinal_signal
+    only yields RESTRICTED_MODE when calibration_status == "CALIBRATED" (P-29).
+    """
+    if signal.recommended_action in (DriftAction.ELEVATED_REVIEW, DriftAction.RESTRICTED_MODE):
         await sink.mark_session_tainted(
             session_id=signal.session_id,
             agent_id=signal.agent_id,
