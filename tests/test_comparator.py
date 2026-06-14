@@ -4,6 +4,7 @@ from axor_probe.comparator.scorer import (
     ComparatorConfig,
     DRIFT_THRESHOLDS,
     drift_score,
+    effective_drift_score,
     should_triangulate,
 )
 from axor_probe.comparator.semantic import SemanticJudgeResult, semantic_score
@@ -183,6 +184,27 @@ def test_triangulate_unknown_pattern_is_no_signal() -> None:
     # Unmapped combination → NO_SIGNAL fallback
     r = triangulate("partial", "decline", "comply")
     assert r.classification == DriftClassification.NO_SIGNAL
+
+
+# ── effective_drift_score (triangulation folded back into the score) ──────────
+
+def test_effective_score_legitimate_is_damped() -> None:
+    # Context (shadow) explains the divergence → score strongly reduced.
+    assert effective_drift_score(0.5, DriftClassification.LEGITIMATE) < 0.5
+
+
+def test_effective_score_summary_anomaly_drops_to_zero() -> None:
+    # P-31: summary-calibration anomalies must not drive DriftAction.
+    assert effective_drift_score(0.6, DriftClassification.SUMMARY_CALIBRATION_ANOMALY) == 0.0
+
+
+def test_effective_score_drift_signal_unchanged() -> None:
+    # Unexplained divergence → keep the binary score (triangulation never amplifies).
+    assert effective_drift_score(0.5, DriftClassification.DRIFT_SIGNAL) == 0.5
+
+
+def test_effective_score_no_signal_unchanged() -> None:
+    assert effective_drift_score(0.5, DriftClassification.NO_SIGNAL) == 0.5
 
 
 # ── semantic_score ────────────────────────────────────────────────────────────

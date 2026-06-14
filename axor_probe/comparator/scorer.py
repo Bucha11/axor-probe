@@ -5,12 +5,42 @@ from enum import Enum
 
 from axor_probe.comparator.semantic import SemanticJudgeResult, semantic_score
 from axor_probe.comparator.structural import BASE_FIELD_WEIGHTS, ComparisonResult
+from axor_probe.comparator.triangulator import DriftClassification
 from axor_probe.probes.schema import ProbeType
 
 
 class ComparisonMode(str, Enum):
     BINARY = "binary"
     TRIANGULATED = "triangulated"
+
+
+# TRIANGULATION_DAMPING — once triangulation has classified a borderline (ambiguity-
+# band) result, the action-driving drift score is multiplied by this factor. The whole
+# point of triangulation is to suppress the *context-explained* false-positive class
+# (README §Triangulation), so it may only LOWER the score, never raise it:
+#   LEGITIMATE                  context (shadow) explains the divergence → strongly damp
+#   SUMMARY_CALIBRATION_ANOMALY P-31: logged only, must not drive DriftAction → drop to 0
+#   DRIFT_SIGNAL                divergence unexplained by context → keep the binary score
+#   NO_SIGNAL                   no diagnostic information → keep the binary score
+# UNCALIBRATED — first-principles factors; fit against labeled data (calibration step 5d).
+TRIANGULATION_DAMPING: dict[DriftClassification, float] = {
+    DriftClassification.LEGITIMATE: 0.3,
+    DriftClassification.SUMMARY_CALIBRATION_ANOMALY: 0.0,
+    DriftClassification.DRIFT_SIGNAL: 1.0,
+    DriftClassification.NO_SIGNAL: 1.0,
+}
+
+
+def effective_drift_score(binary_score: float, classification: DriftClassification) -> float:
+    """Fold a triangulation classification back into the drift score (P-30/P-31).
+
+    Triangulation runs only on borderline results and may only *reduce* the score —
+    its purpose is to suppress the context-explained false-positive class. Returns the
+    binary score unchanged for DRIFT_SIGNAL / NO_SIGNAL. This is the value the
+    accumulator and DriftAction see; the raw binary comparison remains available via
+    the DriftSignal's triangulation_result for audit.
+    """
+    return binary_score * TRIANGULATION_DAMPING.get(classification, 1.0)
 
 
 # DRIFT_THRESHOLDS — classification boundary: raw drift_score above threshold → high-drift signal.

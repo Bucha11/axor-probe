@@ -161,6 +161,20 @@ class _AmbiguousComparator(_FakeComparator):
         return True
 
 
+class _LegitimateTriangulationComparator(_AmbiguousComparator):
+    """Triangulation classifies the borderline result as context-explained."""
+
+    def triangulate_decisions(self, snap: str, shad: str, base: str) -> TriangulatedResult:
+        return TriangulatedResult(snap, shad, base, DriftClassification.LEGITIMATE)
+
+
+class _ConfirmedDriftTriangulationComparator(_AmbiguousComparator):
+    """Triangulation confirms the borderline result is genuine drift."""
+
+    def triangulate_decisions(self, snap: str, shad: str, base: str) -> TriangulatedResult:
+        return TriangulatedResult(snap, shad, base, DriftClassification.DRIFT_SIGNAL)
+
+
 def _make_pipeline(
     scheduler: Any = None,
     snapshot_factory: Any = None,
@@ -331,6 +345,27 @@ async def test_triangulation_runs_when_score_in_ambiguity_band() -> None:
     assert signal.comparison_mode == ComparisonMode.TRIANGULATED
 
 
+async def test_triangulation_legitimate_damps_recorded_score() -> None:
+    # A context-explained (LEGITIMATE) borderline result must be damped below the
+    # binary 0.5 it came in at — triangulation's whole purpose (P-30).
+    pipeline, store = _make_pipeline(comparator=_LegitimateTriangulationComparator())
+    await pipeline.run(_EVENT)
+
+    signal = store.all_signals()[0]
+    assert signal.comparison_mode == ComparisonMode.TRIANGULATED
+    assert signal.drift_score is not None and signal.drift_score < 0.5
+
+
+async def test_triangulation_confirmed_drift_keeps_score() -> None:
+    # A confirmed DRIFT_SIGNAL borderline result keeps its binary score (no damping).
+    pipeline, store = _make_pipeline(comparator=_ConfirmedDriftTriangulationComparator())
+    await pipeline.run(_EVENT)
+
+    signal = store.all_signals()[0]
+    assert signal.comparison_mode == ComparisonMode.TRIANGULATED
+    assert signal.drift_score == 0.5
+
+
 async def test_triangulation_skip_on_baseline_failure_uses_binary() -> None:
     pipeline, store = _make_pipeline(
         comparator=_AmbiguousComparator(),
@@ -351,6 +386,15 @@ async def test_probes_sent_increments_across_runs() -> None:
     await pipeline.run(_EVENT)
     await pipeline.run(_EVENT)
     assert pipeline._probes_sent == 2
+
+
+async def test_concurrent_runs_are_serialized_no_lost_updates() -> None:
+    import asyncio
+    pipeline, store = _make_pipeline()
+    await asyncio.gather(*(pipeline.run(_EVENT) for _ in range(5)))
+    # The instance lock serialises the cycles, so every probe is counted/stored.
+    assert pipeline._probes_sent == 5
+    assert len(store.all_signals()) == 5
 
 
 async def test_pipeline_state_resets_between_sessions() -> None:

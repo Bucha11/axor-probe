@@ -9,10 +9,16 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from axor_probe.comparator.accumulator import DriftAccumulator
-from axor_probe.comparator.scorer import ComparatorConfig, ComparisonMode, drift_score, should_triangulate
+from axor_probe.comparator.scorer import (
+    ComparatorConfig,
+    ComparisonMode,
+    drift_score,
+    effective_drift_score,
+    should_triangulate,
+)
 from axor_probe.comparator.semantic import SemanticJudge, SemanticJudgeResult
 from axor_probe.comparator.structural import compare_payloads, ComparisonResult
-from axor_probe.comparator.triangulator import triangulate, TriangulatedResult
+from axor_probe.comparator.triangulator import DriftClassification, triangulate, TriangulatedResult
 from axor_probe.executor.runner import ProbeExecutor, ProbeResponse
 from axor_probe.executor.snapshot import StateSnapshot
 from axor_probe.probes.library import ProbeLibrary
@@ -45,7 +51,14 @@ class RuntimeEvent:
 # ── Dependency protocols ──────────────────────────────────────────────────────
 
 class ProbeScheduler(Protocol):
-    """Gate: returns True if this event warrants a probe dispatch."""
+    """Gate: returns True if this event warrants a probe dispatch.
+
+    evaluate() must be a pure predicate (no side effects) — the pipeline may call it
+    after another pre-gate already did (e.g. CoreContextTap). A scheduler that tracks
+    a per-session budget / cooldown may optionally expose ``record_dispatch()``; the
+    pipeline calls it exactly once after the gate passes so the dispatch is committed
+    a single time regardless of how many gates ran.
+    """
     def evaluate(self, event: RuntimeEvent) -> bool: ...
 
 
@@ -199,16 +212,32 @@ class ProbePipeline:
     _drift_signals: list[DriftSignal] = field(default_factory=list, init=False, repr=False)
     _timeline: list[ComparisonResult] = field(default_factory=list, init=False, repr=False)
     _active_session_id: str | None = field(default=None, init=False, repr=False)
+    # Serialises cycles: run() is fire-and-forget from CoreContextTap, and the
+    # session-scoped counters / accumulator / timeline are not safe under overlap.
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
 
-    async def run(self, event: RuntimeEvent) -> ProbeReport | None:  # noqa: PLR0912
+    async def run(self, event: RuntimeEvent) -> ProbeReport | None:
         """
         Execute one probe cycle for the given RuntimeEvent (O-1).
         Returns ProbeReport on success, None if the cycle was skipped or failed early.
-        """
 
+        Serialised by an instance lock — overlapping cycles would corrupt the
+        session-scoped counters, the accumulator, and the timeline.
+        """
+        async with self._lock:
+            return await self._run_locked(event)
+
+    async def _run_locked(self, event: RuntimeEvent) -> ProbeReport | None:  # noqa: PLR0912
         # Step 1: gate
         if not self.scheduler.evaluate(event):
             return None
+        # evaluate() is a pure predicate; commit the dispatch exactly once here so a
+        # pre-gating CoreContextTap and this gate cannot double-count the budget or
+        # trip each other's cooldown. Optional capability — stateless schedulers and
+        # test fakes simply omit it.
+        record_dispatch = getattr(self.scheduler, "record_dispatch", None)
+        if callable(record_dispatch):
+            record_dispatch()
         self._ensure_session_scope(event.session_id)
 
         # Step 2: capture context
@@ -286,8 +315,13 @@ class ProbePipeline:
                     "tool_call_attempted": baseline_resp.tool_call_attempted,
                 }
                 self._probes_triangulated += 1
-                if triangulation_result.classification.value == "summary_calibration_anomaly":
+                if triangulation_result.classification is DriftClassification.SUMMARY_CALIBRATION_ANOMALY:
                     self._summary_calibration_anomalies += 1
+                # Fold the triangulation verdict back into the action-driving score
+                # (P-30/P-31): a context-explained borderline result is damped so it
+                # does not inflate the longitudinal signal or DriftAction. Without this
+                # the extra inference call would be computed and stored but inert.
+                score = effective_drift_score(score, triangulation_result.classification)
             except Exception:
                 log.warning("TRIANGULATION_SKIPPED probe_id=%s", probe.probe_id, exc_info=True)
 

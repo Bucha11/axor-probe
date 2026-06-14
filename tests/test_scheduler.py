@@ -122,6 +122,64 @@ async def test_reputation_poll_disabled_when_no_path() -> None:
     assert len(dispatched) == 0
 
 
+async def test_reputation_poll_triggers_below_threshold(tmp_path) -> None:
+    import json
+    snap = tmp_path / "rep.json"
+    snap.write_text(json.dumps({"reputation_score": 0.1}))
+
+    dispatched: list[str] = []
+
+    async def dispatch(reason: str) -> None:
+        dispatched.append(reason)
+
+    cfg = ProbeScheduleConfig(
+        reputation_snapshot_path=str(snap),
+        reputation_score_threshold=0.5,
+        reputation_poll_interval_seconds=0,
+        cooldown_window_seconds=0,
+        jitter_seconds=0.0,
+    )
+    ctrl = ProbeController(cfg, dispatch)
+    task = asyncio.create_task(ctrl.run_reputation_poll())
+    await asyncio.sleep(0.05)  # let a few poll iterations run
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    assert "reputation_below_threshold" in dispatched
+
+
+async def test_reputation_poll_no_trigger_above_threshold(tmp_path) -> None:
+    import json
+    snap = tmp_path / "rep.json"
+    snap.write_text(json.dumps({"reputation_score": 0.9}))
+
+    dispatched: list[str] = []
+
+    async def dispatch(reason: str) -> None:
+        dispatched.append(reason)
+
+    cfg = ProbeScheduleConfig(
+        reputation_snapshot_path=str(snap),
+        reputation_score_threshold=0.5,
+        reputation_poll_interval_seconds=0,
+        cooldown_window_seconds=0,
+        jitter_seconds=0.0,
+    )
+    ctrl = ProbeController(cfg, dispatch)
+    task = asyncio.create_task(ctrl.run_reputation_poll())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    assert dispatched == []
+
+
 # ── No session termination (P-27) ────────────────────────────────────────────
 
 async def test_trigger_does_not_terminate_session() -> None:
@@ -132,11 +190,35 @@ async def test_trigger_does_not_terminate_session() -> None:
     assert not hasattr(ctrl, "session_id")
 
 
-def test_evaluate_manual_event_dispatches_once() -> None:
+def test_evaluate_is_pure_does_not_advance_count() -> None:
+    # evaluate() is a pure predicate now; only record_dispatch() commits.
     ctrl, _ = _make_controller(cooldown=0)
     event = SimpleNamespace(event_type="manual", token_count=0, has_external_content=False)
     assert ctrl.evaluate(event)
+    assert ctrl.probes_sent == 0
+    ctrl.record_dispatch()
     assert ctrl.probes_sent == 1
+
+
+def test_double_gate_then_single_commit_counts_once() -> None:
+    # Reproduces the core_tap → pipeline path: the same scheduler is gated twice
+    # for one event, but only one record_dispatch fires. Must count exactly once,
+    # and the second evaluate must still return True (not tripped by cooldown).
+    ctrl, _ = _make_controller(cooldown=30)
+    event = SimpleNamespace(event_type="manual", token_count=0, has_external_content=False)
+    assert ctrl.evaluate(event)          # tap pre-gate
+    assert ctrl.evaluate(event)          # pipeline gate — same answer, no throttle
+    ctrl.record_dispatch()               # pipeline commits once
+    assert ctrl.probes_sent == 1
+
+
+def test_cooldown_measured_from_committed_dispatch() -> None:
+    # After a committed dispatch, a fresh evaluate within the cooldown is throttled.
+    ctrl, _ = _make_controller(cooldown=30)
+    event = SimpleNamespace(event_type="manual", token_count=0, has_external_content=False)
+    assert ctrl.evaluate(event)
+    ctrl.record_dispatch()
+    assert not ctrl.evaluate(event)      # within cooldown of the committed dispatch
 
 
 def test_evaluate_context_growth_threshold() -> None:

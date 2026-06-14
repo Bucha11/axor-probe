@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from axor_probe.probes.schema import InjectionMode, Probe
 from axor_probe.executor.snapshot import StateSnapshot
+
+log = logging.getLogger("axor.probe.executor")
 
 # Inference callable injected by the caller — no hard SDK dependency.
 # Receives a list of message dicts and returns a dict response.
@@ -45,8 +48,26 @@ class ProbeExecutor:
         # instance replays the live session's (raw) context window. With a
         # local/trusted model it may be left None.
         self._context_sanitizer = context_sanitizer
+        self._warned_unsanitized_taint = False
 
     async def execute(self, probe: Probe, snapshot: StateSnapshot) -> ProbeResponse:
+        # Replaying a tainted (untrusted-content-bearing) context window to the
+        # inference model with no sanitizer means raw external content reaches that
+        # model. Surface it once — the operator must wire a context_sanitizer when the
+        # model is external. See the sanitizer note in __init__ and README.
+        if (
+            self._context_sanitizer is None
+            and snapshot.canonicalized_summary.taint_active
+            and not self._warned_unsanitized_taint
+        ):
+            log.warning(
+                "replaying TAINTED context to probe inference with no context_sanitizer "
+                "(session=%s) — raw untrusted content reaches the model; wire a "
+                "context_sanitizer for external models",
+                snapshot.session_id,
+            )
+            self._warned_unsanitized_taint = True
+
         messages = self._build_messages(probe, snapshot)
         raw = await self._inference_fn(messages)
 

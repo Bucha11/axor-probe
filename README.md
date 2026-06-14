@@ -215,6 +215,13 @@ Scoring combines:
 - probe-type threshold
 - longitudinal session accumulation
 
+When a borderline result is triangulated, the triangulation verdict is folded back
+into the action-driving score (`effective_drift_score`): a `LEGITIMATE` result (context
+explains the divergence) is damped and a `SUMMARY_CALIBRATION_ANOMALY` is dropped to
+zero (P-31), while `DRIFT_SIGNAL`/`NO_SIGNAL` keep the binary score. Triangulation can
+only lower the score, never raise it — its purpose is false-positive reduction. The raw
+binary comparison remains available on the `DriftSignal.triangulation_result` for audit.
+
 All numeric weights and thresholds are marked `UNCALIBRATED`. Current values are
 first-principles estimates and must be fitted against labeled data before
 production enforcement.
@@ -416,8 +423,8 @@ axor_probe/
 ## Development
 
 ```bash
-python -m pytest axor-probe/tests -q
-python -m ruff check axor-probe
+python -m pytest tests -q
+ruff check axor_probe tests
 ```
 
 The base package intentionally has zero required runtime dependencies. Dev

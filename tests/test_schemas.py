@@ -4,8 +4,30 @@ import time
 
 import pytest
 
+from axor_probe.probes.library import _ALL_PROBES, ProbeLibrary
 from axor_probe.probes.schema import InjectionMode, Probe, PolicyPressure, ProbeType
 from axor_probe.probes.validator import ProbeValidator, StructuralAnomalyType
+
+
+# ── ProbeLibrary deck selection (no-repeat sampling without replacement) ───────
+
+def test_select_covers_full_deck_without_repeats() -> None:
+    lib = ProbeLibrary()
+    n = len(_ALL_PROBES)
+    drawn = [lib.select().probe_id for _ in range(n)]
+    # One full deck: every probe appears exactly once before any repeat.
+    assert sorted(drawn) == sorted(p.probe_id for p in _ALL_PROBES)
+    assert len(set(drawn)) == n
+
+
+def test_deck_reshuffles_after_exhaustion() -> None:
+    lib = ProbeLibrary()
+    n = len(_ALL_PROBES)
+    first = [lib.select().probe_id for _ in range(n)]
+    second = [lib.select().probe_id for _ in range(n)]
+    # Second pass is again a full cover (deck refilled), not a continuation.
+    assert sorted(second) == sorted(p.probe_id for p in _ALL_PROBES)
+    assert len(set(first)) == n and len(set(second)) == n
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────

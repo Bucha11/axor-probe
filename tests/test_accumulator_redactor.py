@@ -89,24 +89,34 @@ def test_longitudinal_signal_structural_contribution() -> None:
 def test_consistency_anomaly_false_below_threshold() -> None:
     acc = DriftAccumulator("sess", "1.0.0")
     for _ in range(4):
-        acc.record(_make_result(0.1))
+        acc.record(_make_result(0.0))  # perfectly consistent, but below count threshold
     assert not acc.check_consistency_anomaly()
 
 
 def test_consistency_anomaly_true_at_threshold() -> None:
     acc = DriftAccumulator("sess", "1.0.0")
-    # Default threshold is 5
+    # Default threshold is 5; only near-zero drift counts as "perfect".
     for _ in range(5):
-        acc.record(_make_result(0.1))
+        acc.record(_make_result(0.0))
     assert acc.check_consistency_anomaly()
+
+
+def test_subthreshold_nonzero_drift_does_not_count_as_perfect() -> None:
+    # Sub-threshold but non-zero drift must NOT advance the perfect-consistency
+    # streak — the anomaly targets suspiciously *perfect* agreement, not low drift.
+    acc = DriftAccumulator("sess", "1.0.0")
+    for _ in range(6):
+        acc.record(_make_result(0.1))  # below DATA_DISCLOSURE threshold 0.5, but not perfect
+    assert acc.perfect_consistency_streak == 0
+    assert not acc.check_consistency_anomaly()
 
 
 def test_consistency_streak_resets_on_high_drift() -> None:
     acc = DriftAccumulator("sess", "1.0.0")
     for _ in range(3):
-        acc.record(_make_result(0.1))
+        acc.record(_make_result(0.0))
     assert acc.perfect_consistency_streak == 3
-    acc.record(_make_result(0.9))  # above threshold → resets streak
+    acc.record(_make_result(0.9))  # divergence → resets streak
     assert acc.perfect_consistency_streak == 0
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import dataclasses
 import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from axor_probe.probes.schema import InjectionMode, Probe, PolicyPressure, ProbeType
 
@@ -253,6 +253,13 @@ _ALL_PROBES: tuple[Probe, ...] = (
 @dataclass
 class ProbeLibrary:
     version: str = _VERSION
+    # Sampling WITHOUT replacement: select() draws from a reshuffled deck and does not
+    # repeat a probe until every one has been used. This gives even probe-type coverage
+    # over a session and avoids the back-to-back repeats that plain random.choice
+    # produced (which also made probes easier to recognise). SystemRandom keeps the
+    # draw order unpredictable to an agent trying to anticipate the next probe.
+    _rng: random.Random = field(default_factory=random.SystemRandom, init=False, repr=False)
+    _deck: list[Probe] = field(default_factory=list, init=False, repr=False)
 
     @property
     def probes(self) -> tuple[Probe, ...]:
@@ -261,5 +268,9 @@ class ProbeLibrary:
         return tuple(dataclasses.replace(p, timestamp=now) for p in _ALL_PROBES)
 
     def select(self) -> Probe:
-        """Returns a single probe stamped with the current dispatch time."""
-        return dataclasses.replace(random.choice(_ALL_PROBES), timestamp=time.time())
+        """Returns the next probe from a reshuffled, no-repeat deck, stamped with the
+        current dispatch time. The deck refills (reshuffles) once exhausted."""
+        if not self._deck:
+            self._deck = list(_ALL_PROBES)
+            self._rng.shuffle(self._deck)
+        return dataclasses.replace(self._deck.pop(), timestamp=time.time())

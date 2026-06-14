@@ -132,6 +132,38 @@ async def test_emit_sentinel_silent_for_log_only() -> None:
     sink.mark_session_tainted.assert_not_awaited()
 
 
+# ── feed_audit (axor-eval) ────────────────────────────────────────────────────
+
+async def test_feed_audit_serialises_report_fields() -> None:
+    from axor_probe.integration.eval import feed_audit
+    from axor_probe.signals.report import ProbeReport
+
+    fed: list[dict] = []
+
+    async def feed_fn(payload: dict) -> None:
+        fed.append(payload)
+
+    report = ProbeReport.build(
+        session_id="s1", agent_id="a1", model="m",
+        probe_library_version="1.0.0",
+        drift_signals=[], timeline=[],
+        probes_sent=4, probes_invalid=0, probes_triangulated=1,
+        summary_calibration_anomalies=0,
+        consistency_anomaly_detected=False,
+        calibration_status="UNCALIBRATED",
+        longitudinal_signal=0.25,
+    )
+    await feed_audit(report, feed_fn)
+
+    assert len(fed) == 1
+    payload = fed[0]
+    assert payload["session_id"] == "s1"
+    assert payload["agent_id"] == "a1"
+    assert payload["probes_sent"] == 4
+    assert payload["longitudinal_signal"] == 0.25
+    assert payload["calibration_status"] == "UNCALIBRATED"
+
+
 # ── ProbeTaintBridge ──────────────────────────────────────────────────────────
 
 async def test_probe_taint_bridge_buffers_sessions() -> None:

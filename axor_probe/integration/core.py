@@ -40,11 +40,11 @@ async def notify_core(signal: DriftSignal, sink: CoreDriftSink) -> None:
     Fires for ELEVATED_REVIEW and RESTRICTED_MODE only.
     LOG_ONLY signals are informational and do not cross the integration boundary.
 
-    RESTRICTED_MODE is passed unconditionally — the axor-core TaintEngineDriftObserver
-    applies SESSION-scoped taint regardless of calibration status, since the caller
-    controls whether to wire this integration at all.
-    Callers operating with UNCALIBRATED thresholds should not wire this integration
-    until calibration is complete (P-29).
+    Calibration interlock (P-29): RESTRICTED_MODE is downgraded to ELEVATED_REVIEW
+    when calibration_status != "CALIBRATED", so an uncalibrated deployment can never
+    drive core into a restricted state automatically. This mirrors the same downgrade
+    in DriftAction.from_longitudinal_signal — defence in depth, since callers may
+    construct a signal directly. Wire this integration only once calibration is done.
     """
     action = signal.recommended_action
     if action is DriftAction.RESTRICTED_MODE and signal.calibration_status != "CALIBRATED":

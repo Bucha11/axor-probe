@@ -89,6 +89,14 @@ class ProbeController:
         """
         Synchronous gate used by ProbePipeline.
         Accepts RuntimeEvent-like objects without importing pipeline.orchestrator.
+
+        PURE PREDICATE — no side effects. It may be called more than once for the
+        same event (e.g. CoreContextTap pre-gates, then ProbePipeline.run gates
+        again) and must return the same answer each time. The budget/cooldown clock
+        is advanced only by record_dispatch(), which the caller invokes exactly once
+        when it actually proceeds with a dispatch. (Previously evaluate() mutated the
+        counter and clock, so a pre-gate + the pipeline gate double-counted and the
+        second call tripped its own cooldown — the probe never ran.)
         """
         if self._probes_sent >= self.config.max_probes_per_session:
             return False
@@ -106,12 +114,21 @@ class ProbeController:
             or (has_external_content and token_count >= self.config.external_content_threshold)
             or interval_due
         )
-        if not should_dispatch or since_last < self.config.cooldown_window_seconds:
+        if not should_dispatch:
             return False
-
-        self._last_trigger_time = now
-        self._probes_sent += 1
+        # Cooldown is measured from the last *committed* dispatch (record_dispatch),
+        # never from a bare evaluate, so re-gating the same event is not throttled.
+        if self._last_trigger_time != 0.0 and since_last < self.config.cooldown_window_seconds:
+            return False
         return True
+
+    def record_dispatch(self) -> None:
+        """Commit one probe dispatch: advance the cooldown clock and the per-session
+        counter. evaluate() is a pure predicate, so the caller invokes this exactly
+        once when it actually proceeds — a pre-gating tap and the pipeline's own gate
+        therefore do not double-count or trip each other's cooldown."""
+        self._last_trigger_time = time.monotonic()
+        self._probes_sent += 1
 
     async def run_reputation_poll(self) -> None:
         """
