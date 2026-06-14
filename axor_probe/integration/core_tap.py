@@ -1,25 +1,36 @@
 """
 Adapter for axor-core's neutral, read-only "session tap" seam.
 
-axor-core defines a ContextTap Protocol (axor_core/contracts/observation.py) that
-pushes a SessionContextView on each governance-path context event. This module
-attaches axor-probe to that seam WITHOUT importing axor-core (invariant P-34): we
-implement ContextTap structurally and only reference core types under
-TYPE_CHECKING. This mirrors the existing structural-Protocol pattern in
-axor_probe/integration/core.py (CoreDriftSink).
+FORWARD INTEGRATION: axor-core does not yet emit a per-turn session view or
+call an on_context_event tap from GovernedNode — there is no such observation
+contract or wiring in core today (no SessionContextView / ContextTap in
+axor_core.contracts). Following the same pattern as
+axor_sentinel/integration/core_sink.py (CoreSessionSink), this module defines
+the shape it consumes HERE, consumer-side, as the structural Protocol
+_SessionContextViewLike below — it does NOT import a core module that may not
+exist (invariant P-34). A host adapter (or a future GovernedNode observation
+hook) satisfies the tap by duck-typing: constructing a view exposing those
+attributes and calling on_context_event at each governance-path context event.
+Until such a producer exists CoreContextTap has no caller and is exercised only
+by tests.
+
+This mirrors the structural-Protocol pattern in axor_probe/integration/core.py
+(CoreDriftSink → core's BehavioralDriftObserver, which core DOES implement) and
+the forward-integration pattern in axor_sentinel/integration/core_sink.py
+(CoreSessionSink, where core is likewise not yet a producer).
 
 Two pieces:
 
-  * CoreContextTap — structurally implements core's ContextTap. It stores the
-    latest SessionContextView and, on each event, decides via the probe
+  * CoreContextTap — the probe-side tap a core producer pushes views into. It
+    stores the latest view and, on each event, decides via the probe
     ProbeScheduler whether to dispatch a probe cycle. Crucially, the probe cycle
     is scheduled OUT-OF-BAND via asyncio.create_task and is NEVER awaited inline:
-    core's contract requires on_context_event to return promptly and not block
+    the tap contract requires on_context_event to return promptly and not block
     the governance path. We hold references to spawned tasks so they are not
     garbage-collected mid-flight.
 
   * ViewSnapshotFactory — structurally implements probe's SnapshotFactory. It
-    reads the latest SessionContextView captured by a CoreContextTap and maps it
+    reads the latest session view captured by a CoreContextTap and maps it
     into a probe StateSnapshot, deriving the CanonicalizedContextSummary
     structural buckets from the raw observation facts ("the consumer does the
     bucketing"). If no view has been captured yet it raises; the orchestrator
@@ -35,16 +46,18 @@ from axor_probe.executor.snapshot import StateSnapshot
 from axor_probe.pipeline.orchestrator import ProbePipeline, ProbeScheduler, RuntimeEvent
 from axor_probe.shadow.context import CanonicalizedContextSummary
 
-# axor-core's real type is axor_core.contracts.observation.SessionContextView; we
-# never import it (P-34) and type against the structural Protocol below instead,
-# so static analysis needs no axor-core install.
+# There is no core type to import yet (see module docstring). We type against the
+# structural Protocol below, which a future core-side observation view — or a host
+# adapter standing in for one — satisfies by duck-typing. No axor-core install is
+# required for static analysis (P-34).
 
 
 @runtime_checkable
 class _SessionContextViewLike(Protocol):
-    """Structural shape of core's SessionContextView (P-34: no core import).
+    """Structural shape of the per-turn session view this tap consumes.
 
-    Only the attributes axor-probe consumes are declared here.
+    Defined consumer-side (P-34: no core import). Only the attributes axor-probe
+    actually reads are declared here; a producer may expose a superset.
     """
 
     session_id: str
@@ -59,7 +72,7 @@ class _SessionContextViewLike(Protocol):
 
 
 class CoreContextTap:
-    """Structural implementation of core's ContextTap (P-34: no core import).
+    """The probe-side context tap a core producer would push views into.
 
     Stores the latest pushed view and dispatches probe cycles out-of-band.
 

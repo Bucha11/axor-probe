@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from axor_probe.signals.drift import DriftAction
 
@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from axor_probe.signals.drift import DriftSignal
 
 
+@runtime_checkable
 class CoreDriftSink(Protocol):
     """
     Receives behavioral drift signals from axor-probe for axor-core to act on.

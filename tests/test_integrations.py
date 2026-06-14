@@ -68,6 +68,32 @@ def _signal(action: DriftAction, calibration_status: str = "CALIBRATED") -> Drif
     )
 
 
+# ── Structural protocol checks (runtime_checkable) ────────────────────────────
+
+def test_core_drift_sink_is_runtime_checkable() -> None:
+    # A duck-typed sink with the right async method satisfies CoreDriftSink by
+    # isinstance — mirrors how a host wires the real core observer structurally.
+    class _Sink:
+        async def on_drift(self, session_id: str, agent_id: str, action: str) -> None:
+            ...
+
+    assert isinstance(_Sink(), CoreDriftSink)
+
+    class _NotASink:
+        pass
+
+    assert not isinstance(_NotASink(), CoreDriftSink)
+
+
+def test_sentinel_session_sink_is_runtime_checkable() -> None:
+    class _Sink:
+        async def mark_session_tainted(self, session_id: str, agent_id: str) -> None:
+            ...
+
+    assert isinstance(_Sink(), SentinelSessionSink)
+    assert not isinstance(object(), SentinelSessionSink)
+
+
 # ── notify_core ───────────────────────────────────────────────────────────────
 
 async def test_notify_core_fires_for_elevated_review() -> None:
@@ -195,7 +221,9 @@ async def test_probe_taint_bridge_satisfies_sentinel_sink_protocol() -> None:
     ProbeTaintBridge = _probe_bridge_or_skip()
 
     bridge = ProbeTaintBridge()
-    # Protocol structural check — mark_session_tainted must be callable
+    # Structural check — SentinelSessionSink is runtime_checkable, so the real
+    # sentinel bridge must satisfy it by isinstance, not just be callable.
+    assert isinstance(bridge, SentinelSessionSink)
     assert callable(bridge.mark_session_tainted)
 
 

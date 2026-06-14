@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from axor_probe.signals.drift import DriftAction
 
@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from axor_probe.signals.drift import DriftSignal
 
 
+@runtime_checkable
 class SentinelSessionSink(Protocol):
     """
     Receives behavioral taint notifications from axor-probe.
