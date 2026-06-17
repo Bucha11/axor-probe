@@ -86,7 +86,9 @@ def _post(body: dict[str, Any], key: str) -> dict[str, Any]:
                 return json.load(resp)
         except urllib.error.HTTPError as exc:
             last = exc.read().decode(errors="replace")
-            if exc.code in (429, 500, 502, 503, 529) and attempt < 6:
+            # 400 here is usually OpenRouter's "Provider returned error" upstream
+            # flake on the free pool — re-routable, so retry it too.
+            if exc.code in (400, 429, 500, 502, 503, 529) and attempt < 6:
                 time.sleep(delay)
                 delay = min(delay * 2, 60.0)
                 continue
