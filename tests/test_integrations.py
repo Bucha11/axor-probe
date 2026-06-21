@@ -17,7 +17,6 @@ from unittest.mock import AsyncMock
 
 
 from axor_probe.comparator.scorer import ComparisonMode
-from axor_probe.comparator.semantic import SemanticJudgeResult
 from axor_probe.integration.core import CoreDriftSink, notify_core
 from axor_probe.integration.sentinel import (
     SentinelIntegration,
@@ -64,11 +63,6 @@ def _signal(action: DriftAction, calibration_status: str = "CALIBRATED") -> Drif
         triangulation_result=None,
         longitudinal_signal=0.4,
         field_divergences=(),
-        semantic_judge_result=SemanticJudgeResult(
-            policy_ref_match=True,
-            decision_direction_match=True,
-            context_contradiction=False,
-        ),
         snapshot_payload={"decision": "decline"},
         shadow_payload={"decision": "decline"},
         shadow_baseline_payload=None,

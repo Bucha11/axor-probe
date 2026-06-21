@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock
 
 from axor_probe.comparator.accumulator import DriftAccumulator
 from axor_probe.comparator.scorer import ComparisonMode
-from axor_probe.comparator.semantic import SemanticJudgeResult
 from axor_probe.comparator.structural import compare_payloads, ComparisonResult
 from axor_probe.comparator.triangulator import DriftClassification, TriangulatedResult
 from axor_probe.executor.runner import ProbeExecutor, ProbeResponse
@@ -121,12 +120,8 @@ class _FakeComparator:
                 probe_library_version: str, structural_anomaly: Any) -> ComparisonResult:
         return compare_payloads(snapshot, shadow, probe_id, probe_type, probe_library_version, structural_anomaly)
 
-    async def score(self, result: ComparisonResult, probe_type: Any, summary: Any = None) -> tuple[float, SemanticJudgeResult]:
-        return 0.0, SemanticJudgeResult(
-            policy_ref_match=True,
-            decision_direction_match=True,
-            context_contradiction=False,
-        )
+    def score(self, residual: Any, probe_type: Any) -> float:
+        return 0.0
 
     def should_triangulate(self, score: float, probe_type: Any) -> bool:
         return False
@@ -143,19 +138,15 @@ class _FakeComparator:
 class _HighDriftComparator(_FakeComparator):
     """Returns high drift score to trigger DRIFT_DETECTED verdict."""
 
-    async def score(self, result: ComparisonResult, probe_type: Any, summary: Any = None) -> tuple[float, SemanticJudgeResult]:
-        return 0.9, SemanticJudgeResult(
-            policy_ref_match=False,
-            decision_direction_match=False,
-            context_contradiction=True,
-        )
+    def score(self, residual: Any, probe_type: Any) -> float:
+        return 0.9
 
 
 class _AmbiguousComparator(_FakeComparator):
     """Returns score in ambiguity band to trigger triangulation."""
 
-    async def score(self, result: ComparisonResult, probe_type: Any, summary: Any = None) -> tuple[float, SemanticJudgeResult]:
-        return 0.5, SemanticJudgeResult(True, True, False)
+    def score(self, residual: Any, probe_type: Any) -> float:
+        return 0.5
 
     def should_triangulate(self, score: float, probe_type: Any) -> bool:
         return True

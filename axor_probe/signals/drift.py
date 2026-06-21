@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, TYPE_CHECKING
 
-from axor_probe.comparator.semantic import SemanticJudgeResult
 from axor_probe.comparator.structural import DivergenceCategory, FieldDivergence
 from axor_probe.comparator.scorer import ComparisonMode
 from axor_probe.comparator.triangulator import TriangulatedResult
@@ -59,7 +58,6 @@ class DriftSignal:
     triangulation_result: TriangulatedResult | None
     longitudinal_signal: float
     field_divergences: tuple[FieldDivergence, ...]
-    semantic_judge_result: SemanticJudgeResult
     snapshot_payload: dict[str, Any]        # Any: redacted JSON shape varies; must be pre-redacted
     shadow_payload: dict[str, Any]          # Any: redacted JSON shape varies; must be pre-redacted
     shadow_baseline_payload: dict[str, Any] | None  # Any: populated only if TRIANGULATED
