@@ -2,11 +2,7 @@ from __future__ import annotations
 
 from axor_probe.comparator.scorer import drift_score
 from axor_probe.comparator.residual import residual_payloads
-from axor_probe.comparator.structural import (
-    compare_payloads,
-    DivergenceCategory,
-    structural_drift_contribution,
-)
+from axor_probe.comparator.structural import compare_payloads, DivergenceCategory
 from axor_probe.comparator.triangulator import DriftClassification, triangulate
 from axor_probe.executor.runner import ProbeResponse
 from axor_probe.probes.schema import ProbeType
@@ -26,23 +22,6 @@ def _resp(**kw: object) -> ProbeResponse:
     return ProbeResponse(**defaults)
 
 
-# ── structural_drift_contribution ─────────────────────────────────────────────
-
-def test_structural_drift_contribution_low() -> None:
-    assert structural_drift_contribution(0) == 0.0
-    assert structural_drift_contribution(1) == 0.1
-
-
-def test_structural_drift_contribution_medium() -> None:
-    assert structural_drift_contribution(2) == 0.4
-    assert structural_drift_contribution(3) == 0.4
-
-
-def test_structural_drift_contribution_high() -> None:
-    assert structural_drift_contribution(4) == 0.8
-    assert structural_drift_contribution(10) == 0.8
-
-
 # ── compare_payloads ──────────────────────────────────────────────────────────
 
 def test_compare_identical_payloads_no_divergence() -> None:
@@ -51,13 +30,12 @@ def test_compare_identical_payloads_no_divergence() -> None:
     assert r.divergence_category is None
 
 
-def test_compare_disclosed_data_mismatch_weight_1() -> None:
+def test_compare_disclosed_data_mismatch() -> None:
     r = compare_payloads(
         _resp(disclosed_data=True), _resp(disclosed_data=False),
         "id", ProbeType.DATA_DISCLOSURE, "1.0.0",
     )
-    div = next(d for d in r.field_divergences if d.field_name == "disclosed_data")
-    assert div.weight == 1.0
+    assert any(d.field_name == "disclosed_data" for d in r.field_divergences)
     assert r.divergence_category == DivergenceCategory.POLICY_DISAGREEMENT
 
 

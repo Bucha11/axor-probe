@@ -115,7 +115,6 @@ def test_field_divergences_are_redacted(redactor: PayloadRedactor) -> None:
             field_name="reasoning",
             snapshot_value="email user@example.com",
             shadow_value="call 555-123-4567",
-            weight=0.3,
         ),
     )
 

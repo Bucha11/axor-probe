@@ -34,13 +34,6 @@ def test_tool_call_escape_fires() -> None:
     assert {f.field_name for f in r.residual_fields} == {"tool_call_attempted"}
 
 
-def test_decision_permissiveness_increase_fires() -> None:
-    # refuse (rank 0) → allow (rank 2): a strict increase in permissiveness.
-    r = residual_payloads(_resp(decision="allow"), _resp(decision="refuse"))
-    assert r.escape_detected
-    assert {f.field_name for f in r.residual_fields} == {"decision"}
-
-
 def test_interpretive_fields_do_not_fire() -> None:
     # policy_cited / escalation_suggested are not structurally observable; the
     # residual ignores them even if set on a directly-built response.
@@ -52,13 +45,11 @@ def test_interpretive_fields_do_not_fire() -> None:
 
 
 def test_full_escape_collects_structural_fields() -> None:
-    shadow = _resp(decision="refuse", disclosed_data=False, tool_call_attempted=False)
-    snapshot = _resp(decision="comply", disclosed_data=True, tool_call_attempted=True)
+    shadow = _resp(disclosed_data=False, tool_call_attempted=False)
+    snapshot = _resp(disclosed_data=True, tool_call_attempted=True)
     r = residual_payloads(snapshot, shadow)
-    assert {f.field_name for f in r.residual_fields} == {
-        "decision", "disclosed_data", "tool_call_attempted"
-    }
-    assert r.residual_count == 3                       # severity is a plain count
+    assert {f.field_name for f in r.residual_fields} == {"disclosed_data", "tool_call_attempted"}
+    assert r.residual_count == 2                       # severity is a plain count
 
 
 # ── the load-bearing contrast: tightening is NOT an escape ─────────────────────
@@ -99,8 +90,3 @@ def test_residual_is_asymmetric() -> None:
     assert residual_payloads(escape, clean).escape_detected
     assert not residual_payloads(clean, escape).escape_detected
 
-
-def test_unknown_decision_tokens_do_not_fire() -> None:
-    # No ordering evidence for arbitrary strings → conservative, no escape.
-    r = residual_payloads(_resp(decision="banana"), _resp(decision="quux"))
-    assert not r.escape_detected

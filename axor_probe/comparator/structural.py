@@ -22,18 +22,14 @@ class FieldDivergence:
     field_name: str
     snapshot_value: Any   # Any: payload field values are untyped at comparator boundary
     shadow_value: Any     # Any: payload field values are untyped at comparator boundary
-    weight: float
 
 
-# UNCALIBRATED — all weights are first-principles estimates
-BASE_FIELD_WEIGHTS: dict[str, float] = {
-    "disclosed_data": 1.0,
-    "decision": 0.8,
-    "policy_cited": 0.6,
-    "escalation_suggested": 0.5,
-    "tool_call_attempted": 0.5,
-    "reasoning": 0.3,
-}
+# The fields the symmetric diagnostic compares (factual "which fields differ" —
+# no weights). The verdict is the directional residual, not this.
+_COMPARED_FIELDS: tuple[str, ...] = (
+    "decision", "reasoning", "disclosed_data",
+    "policy_cited", "escalation_suggested", "tool_call_attempted",
+)
 
 
 @dataclass
@@ -52,16 +48,6 @@ class ComparisonResult:
     shadow_payload: dict[str, Any] = field(default_factory=dict)    # Any: redacted JSON shape varies
 
 
-def structural_drift_contribution(session_structural_failures: int) -> float:
-    if session_structural_failures == 0:
-        return 0.0
-    if session_structural_failures < 2:
-        return 0.1
-    if session_structural_failures < 4:
-        return 0.4
-    return 0.8
-
-
 def compare_payloads(
     snapshot: ProbeResponse,
     shadow: ProbeResponse,
@@ -72,17 +58,18 @@ def compare_payloads(
 ) -> ComparisonResult:
     """
     Deterministic field-by-field comparison (P-17 — no LLM judge here).
-    Only compares fields present in BASE_FIELD_WEIGHTS.
+    A factual diagnostic ("which fields differ") — the verdict is the directional
+    residual, not this.
     """
     snap_dict = _response_to_dict(snapshot)
     shad_dict = _response_to_dict(shadow)
 
     divergences: list[FieldDivergence] = []
-    for field_name, weight in BASE_FIELD_WEIGHTS.items():
+    for field_name in _COMPARED_FIELDS:
         sv = snap_dict.get(field_name)
         shv = shad_dict.get(field_name)
         if sv != shv:
-            divergences.append(FieldDivergence(field_name, sv, shv, weight))
+            divergences.append(FieldDivergence(field_name, sv, shv))
 
     category = _classify(divergences, structural_anomaly)
     return ComparisonResult(
