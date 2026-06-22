@@ -1,11 +1,6 @@
 from __future__ import annotations
 
-from axor_probe.comparator.scorer import (
-    ComparatorConfig,
-    DRIFT_THRESHOLDS,
-    drift_score,
-    should_triangulate,
-)
+from axor_probe.comparator.scorer import DRIFT_THRESHOLDS, drift_score
 from axor_probe.comparator.residual import residual_payloads
 from axor_probe.comparator.structural import (
     compare_payloads,
@@ -109,27 +104,6 @@ def test_drift_score_tightening_is_zero() -> None:
         _resp(decision="comply", disclosed_data=True, policy_cited=False),    # clean
     )
     assert drift_score(residual, ProbeType.DATA_DISCLOSURE) == 0.0
-
-
-# ── should_triangulate ────────────────────────────────────────────────────────
-
-def test_should_triangulate_within_band() -> None:
-    # DATA_DISCLOSURE threshold=0.5, band=0.15 → [0.35, 0.65]
-    cfg = ComparatorConfig()
-    assert should_triangulate(0.45, ProbeType.DATA_DISCLOSURE, cfg)
-    assert should_triangulate(0.35, ProbeType.DATA_DISCLOSURE, cfg)
-    assert should_triangulate(0.65, ProbeType.DATA_DISCLOSURE, cfg)
-
-
-def test_should_not_triangulate_outside_band() -> None:
-    cfg = ComparatorConfig()
-    assert not should_triangulate(0.2, ProbeType.DATA_DISCLOSURE, cfg)
-    assert not should_triangulate(0.8, ProbeType.DATA_DISCLOSURE, cfg)
-
-
-def test_should_not_triangulate_when_disabled() -> None:
-    cfg = ComparatorConfig(triangulation_enabled=False)
-    assert not should_triangulate(0.45, ProbeType.DATA_DISCLOSURE, cfg)
 
 
 def test_drift_thresholds_present_for_all_probe_types() -> None:
