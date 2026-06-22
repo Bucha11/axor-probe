@@ -24,7 +24,12 @@ from axor_probe.integration.sentinel import (
 )
 from axor_probe.probes.schema import ProbeType
 from axor_probe.signals.drift import DriftAction, DriftSignal
-from axor_probe.signals.report import VERDICT_DRIFT_DETECTED, ProbeReport, wilson_ci
+from axor_probe.signals.report import (
+    VERDICT_DRIFT_DETECTED,
+    ProbeReport,
+    difference_is_real,
+    wilson_ci,
+)
 
 
 def _probe_bridge_or_skip():
@@ -240,6 +245,17 @@ def test_wilson_ci_tightens_with_more_runs() -> None:
     lo2, hi2 = wilson_ci(50, 100)
     assert (hi1 - lo1) > (hi2 - lo2)
     assert wilson_ci(0, 0) == (0.0, 0.0)
+
+
+def test_difference_is_real_distinguishes_signal_from_noise() -> None:
+    # A large, well-sampled gap (5% vs 80%, n=100 each) is real.
+    assert difference_is_real(5, 100, 80, 100)
+    # The same rates but tiny n (0/1 vs 1/1) is within noise.
+    assert not difference_is_real(0, 1, 1, 1)
+    # Identical rates are never "real".
+    assert not difference_is_real(50, 100, 50, 100)
+    # Degenerate: an empty side is never significant.
+    assert not difference_is_real(0, 0, 80, 100)
 
 
 def test_report_verdict_is_escape_based_not_scalar() -> None:

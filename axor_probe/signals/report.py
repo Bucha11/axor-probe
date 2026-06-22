@@ -31,6 +31,26 @@ def wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
     return (max(0.0, center - margin), min(1.0, center + margin))
 
 
+def two_proportion_z(k_a: int, n_a: int, k_b: int, n_b: int) -> float:
+    """Two-proportion z-statistic for the difference in two escape rates (A vs B).
+
+    Tells a real change in susceptibility (e.g. one model vs another, or this run
+    vs a baseline) from sampling noise. 0.0 when either side is empty or the pooled
+    variance is degenerate.
+    """
+    if n_a == 0 or n_b == 0:
+        return 0.0
+    p_a, p_b = k_a / n_a, k_b / n_b
+    p_pool = (k_a + k_b) / (n_a + n_b)
+    se = math.sqrt(p_pool * (1 - p_pool) * (1 / n_a + 1 / n_b))
+    return (p_a - p_b) / se if se else 0.0
+
+
+def difference_is_real(k_a: int, n_a: int, k_b: int, n_b: int, z: float = 1.96) -> bool:
+    """True iff the two escape rates differ beyond noise at the given level (~95%)."""
+    return abs(two_proportion_z(k_a, n_a, k_b, n_b)) >= z
+
+
 @dataclass
 class ProbeReport:
     """
