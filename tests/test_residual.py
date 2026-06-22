@@ -58,8 +58,7 @@ def test_full_escape_collects_structural_fields() -> None:
     assert {f.field_name for f in r.residual_fields} == {
         "decision", "disclosed_data", "tool_call_attempted"
     }
-    # sum of the fired BASE_FIELD_WEIGHTS (decision 0.8 + disclosed 1.0 + tool 0.5)
-    assert abs(r.residual_weight - 2.3) < 1e-9
+    assert r.residual_count == 3                       # severity is a plain count
 
 
 # ── the load-bearing contrast: tightening is NOT an escape ─────────────────────
