@@ -33,6 +33,19 @@ class DriftAction(str, Enum):
             return cls.ELEVATED_REVIEW
         return cls.LOG_ONLY
 
+    @classmethod
+    def from_escape(cls, escape_detected: bool) -> DriftAction:
+        """Deterministic per-probe action from the directional-residual verdict.
+
+        A non-empty residual is a regime escape (deterministic, confidence 1.0) →
+        ELEVATED_REVIEW. No escape → LOG_ONLY. RESTRICTED_MODE is reserved for a
+        calibrated longitudinal policy (the telemetry path) and is never
+        auto-triggered from a single deterministic escape. This is the headline
+        action; ``from_longitudinal_signal`` is retained only for the UNCALIBRATED
+        longitudinal telemetry view.
+        """
+        return cls.ELEVATED_REVIEW if escape_detected else cls.LOG_ONLY
+
 
 @dataclass(frozen=True)
 class DriftSignal:
@@ -64,3 +77,8 @@ class DriftSignal:
     calibration_status: str                 # "UNCALIBRATED" | "CALIBRATED"
     timestamp: float
     recommended_action: DriftAction
+    # Deterministic per-probe verdict (directional residual snapshot \ shadow). This
+    # is the headline: a True means a regime escape, confidence 1.0. The scalar
+    # drift_score / longitudinal_signal above are UNCALIBRATED telemetry and do not
+    # gate the verdict or action.
+    escape_detected: bool = False

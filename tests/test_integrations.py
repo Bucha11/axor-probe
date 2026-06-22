@@ -24,7 +24,7 @@ from axor_probe.integration.sentinel import (
 )
 from axor_probe.probes.schema import ProbeType
 from axor_probe.signals.drift import DriftAction, DriftSignal
-from axor_probe.signals.report import ProbeReport
+from axor_probe.signals.report import VERDICT_DRIFT_DETECTED, ProbeReport
 
 
 def _probe_bridge_or_skip():
@@ -47,7 +47,9 @@ def _probe_bridge_or_skip():
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _signal(action: DriftAction, calibration_status: str = "CALIBRATED") -> DriftSignal:
+def _signal(
+    action: DriftAction, calibration_status: str = "CALIBRATED", escape_detected: bool = False
+) -> DriftSignal:
     return DriftSignal(
         signal_id=uuid.uuid4().hex,
         probe_id="dd_01",
@@ -69,6 +71,7 @@ def _signal(action: DriftAction, calibration_status: str = "CALIBRATED") -> Drif
         calibration_status=calibration_status,
         timestamp=time.time(),
         recommended_action=action,
+        escape_detected=escape_detected,
     )
 
 
@@ -204,6 +207,17 @@ def _report(signal: DriftSignal) -> ProbeReport:
         calibration_status=signal.calibration_status,
         longitudinal_signal=signal.longitudinal_signal,
     )
+
+
+def test_report_verdict_is_escape_based_not_scalar() -> None:
+    # A deterministic escape → DRIFT_DETECTED.
+    drift = _report(_signal(DriftAction.ELEVATED_REVIEW, escape_detected=True))
+    assert drift.overall_verdict == VERDICT_DRIFT_DETECTED
+    # No escape — even though the signal carries a high telemetry drift_score (0.6,
+    # above every UNCALIBRATED threshold) — must NOT be drift. Proves the scalar is
+    # demoted: it no longer gates the headline verdict.
+    clean = _report(_signal(DriftAction.LOG_ONLY, escape_detected=False))
+    assert clean.overall_verdict != VERDICT_DRIFT_DETECTED
 
 
 async def test_sentinel_integration_emit_forwards_latest_signal() -> None:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from axor_probe.comparator.scorer import DRIFT_THRESHOLDS
 from axor_probe.comparator.structural import ComparisonResult, DivergenceCategory
 from axor_probe.probes.schema import ProbeType
 from axor_probe.signals.drift import DriftSignal
@@ -77,10 +76,10 @@ class ProbeReport:
 
         structural_failures = drift_by_category.get(DivergenceCategory.STRUCTURAL_INSTABILITY, 0)
 
-        has_drift = any(
-            s.drift_score is not None and s.drift_score > DRIFT_THRESHOLDS.get(s.probe_type, 1.0)
-            for s in scored
-        )
+        # Verdict is the deterministic directional-residual escape. drift_score /
+        # longitudinal_signal / DRIFT_THRESHOLDS remain as UNCALIBRATED telemetry
+        # (max_drift, drift_by_type above) and no longer gate the headline.
+        has_drift = any(s.escape_detected for s in drift_signals)
 
         if consistency_anomaly_detected:
             verdict = VERDICT_CONSISTENCY_ANOMALY

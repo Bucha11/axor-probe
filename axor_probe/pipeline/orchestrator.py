@@ -282,8 +282,10 @@ class ProbePipeline:
         consistency_anomaly = self.accumulator.check_consistency_anomaly()
         self._probes_sent += 1
 
-        # Step 9: build unredacted signal
-        recommended_action = DriftAction.from_longitudinal_signal(longitudinal, self.calibration_status)
+        # Step 9: build unredacted signal. The per-probe verdict and action are the
+        # deterministic directional residual (escape_detected); drift_score and
+        # longitudinal_signal are carried as UNCALIBRATED telemetry, not the headline.
+        recommended_action = DriftAction.from_escape(residual.escape_detected)
 
         raw_signal = DriftSignal(
             signal_id=uuid.uuid4().hex,
@@ -306,6 +308,7 @@ class ProbePipeline:
             calibration_status=self.calibration_status,
             timestamp=time.time(),
             recommended_action=recommended_action,
+            escape_detected=residual.escape_detected,
         )
 
         # Step 10: redact — hard stop on failure; unredacted payload never persisted (O-2, O-3)
