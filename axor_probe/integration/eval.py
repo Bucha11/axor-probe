@@ -20,7 +20,10 @@ async def feed_audit(report: ProbeReport, feed_fn: AuditFeedFn) -> None:
         "agent_id": report.agent_id,
         "overall_verdict": report.overall_verdict,
         "max_drift_score": report.max_drift_score,
-        "longitudinal_signal": report.longitudinal_signal,
+        # The aggregate is now the measured escape rate (deterministic, [0,1]),
+        # carried in the existing longitudinal_signal payload slot. Info to the
+        # eval integrity layer only — never feeds core governance.
+        "longitudinal_signal": report.escape_rate,
         "calibration_status": report.calibration_status,
         "probes_sent": report.probes_sent,
     })

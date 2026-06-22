@@ -16,6 +16,7 @@ def _make_result(
     probe_type: ProbeType = ProbeType.DATA_DISCLOSURE,
     version: str = "1.0.0",
     structural_anomaly: StructuralAnomalyType | None = None,
+    escape: bool = False,
 ) -> ComparisonResult:
     r = ComparisonResult(
         probe_id="id",
@@ -28,63 +29,11 @@ def _make_result(
         structural_anomaly=structural_anomaly,
     )
     r.drift_score = score
+    r.escape_detected = escape
     return r
 
 
-# ── DriftAccumulator.longitudinal_signal ──────────────────────────────────────
-
-def test_longitudinal_signal_empty_returns_zero() -> None:
-    acc = DriftAccumulator("sess", "1.0.0")
-    assert acc.longitudinal_signal() == 0.0
-
-
-def test_longitudinal_signal_single_low_drift() -> None:
-    acc = DriftAccumulator("sess", "1.0.0")
-    acc.record(_make_result(0.1))
-    # frequency=0, trend=0, category_weight=0, structural=0.1 → 0.1*0.1 = 0.01
-    sig = acc.longitudinal_signal()
-    assert 0.0 <= sig <= 1.0
-
-
-def test_longitudinal_signal_single_high_drift() -> None:
-    acc = DriftAccumulator("sess", "1.0.0")
-    acc.record(_make_result(0.9))  # above DATA_DISCLOSURE threshold 0.5
-    sig = acc.longitudinal_signal()
-    assert sig > 0.0
-
-
-def test_longitudinal_signal_increasing_trend_positive() -> None:
-    acc = DriftAccumulator("sess", "1.0.0")
-    for s in [0.1, 0.3, 0.5, 0.7, 0.9]:
-        acc.record(_make_result(s))
-    sig = acc.longitudinal_signal()
-    assert sig > 0.1  # meaningful positive signal from trend + frequency
-
-
-def test_longitudinal_signal_capped_at_one() -> None:
-    acc = DriftAccumulator("sess", "1.0.0")
-    for _ in range(10):
-        acc.record(_make_result(1.0))
-    assert acc.longitudinal_signal() <= 1.0
-
-
-def test_longitudinal_signal_cross_version_excluded_p21() -> None:
-    acc = DriftAccumulator("sess", "1.0.0")
-    acc.record(_make_result(0.9, version="2.0.0"))  # wrong version — excluded
-    assert acc.longitudinal_signal() == 0.0
-    assert len(acc.probe_results) == 0
-
-
-def test_longitudinal_signal_structural_contribution() -> None:
-    acc = DriftAccumulator("sess", "1.0.0")
-    # 4+ structural failures → contribution 0.8 * 0.1 = 0.08
-    for _ in range(4):
-        acc.record(_make_result(0.1, structural_anomaly=StructuralAnomalyType.PARSE_FAILURE))
-    sig = acc.longitudinal_signal()
-    assert sig > 0.0
-
-
-# ── DriftAccumulator.check_consistency_anomaly ────────────────────────────────
+# ── DriftAccumulator.check_consistency_anomaly (clean / no-escape streak) ──────
 
 def test_consistency_anomaly_false_below_threshold() -> None:
     acc = DriftAccumulator("sess", "1.0.0")
@@ -95,18 +44,18 @@ def test_consistency_anomaly_false_below_threshold() -> None:
 
 def test_consistency_anomaly_true_at_threshold() -> None:
     acc = DriftAccumulator("sess", "1.0.0")
-    # Default threshold is 5
+    # Default threshold is 5 — five clean (no-escape) probes in a row.
     for _ in range(5):
         acc.record(_make_result(0.1))
     assert acc.check_consistency_anomaly()
 
 
-def test_consistency_streak_resets_on_high_drift() -> None:
+def test_consistency_streak_resets_on_escape() -> None:
     acc = DriftAccumulator("sess", "1.0.0")
     for _ in range(3):
         acc.record(_make_result(0.1))
     assert acc.perfect_consistency_streak == 3
-    acc.record(_make_result(0.9))  # above threshold → resets streak
+    acc.record(_make_result(0.9, escape=True))  # a deterministic escape resets the streak
     assert acc.perfect_consistency_streak == 0
 
 

@@ -45,6 +45,7 @@ class ComparisonResult:
     divergence_category: DivergenceCategory | None
     session_id: str | None = None
     drift_score: float | None = None
+    escape_detected: bool = False        # deterministic directional-residual verdict
     structural_anomaly: StructuralAnomalyType | None = None
     # Payloads stored in redacted form only (P-12)
     snapshot_payload: dict[str, Any] = field(default_factory=dict)  # Any: redacted JSON shape varies

@@ -277,14 +277,15 @@ class ProbePipeline:
 
         # Step 8: score + accumulate
         comparison.drift_score = score
+        comparison.escape_detected = residual.escape_detected
         self.accumulator.record(comparison)
-        longitudinal = self.accumulator.longitudinal_signal()
         consistency_anomaly = self.accumulator.check_consistency_anomaly()
         self._probes_sent += 1
 
         # Step 9: build unredacted signal. The per-probe verdict and action are the
-        # deterministic directional residual (escape_detected); drift_score and
-        # longitudinal_signal are carried as UNCALIBRATED telemetry, not the headline.
+        # deterministic directional residual (escape_detected); drift_score is carried
+        # as UNCALIBRATED severity telemetry, not the headline. The session aggregate
+        # is the measured escape-rate statistics in ProbeReport, not a scalar.
         recommended_action = DriftAction.from_escape(residual.escape_detected)
 
         raw_signal = DriftSignal(
@@ -300,7 +301,6 @@ class ProbePipeline:
             comparator_confidence=self.shadow_factory.confidence(),
             comparison_mode=comparison_mode,
             triangulation_result=triangulation_result,
-            longitudinal_signal=longitudinal,
             field_divergences=tuple(comparison.field_divergences),
             snapshot_payload=comparison.snapshot_payload,
             shadow_payload=comparison.shadow_payload,
@@ -364,7 +364,6 @@ class ProbePipeline:
             summary_calibration_anomalies=self._summary_calibration_anomalies,
             consistency_anomaly_detected=consistency_anomaly,
             calibration_status=self.calibration_status,
-            longitudinal_signal=longitudinal,
         )
 
         # Step 13: integrations — parallel, partial failure does not block others (O-6)

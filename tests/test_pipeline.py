@@ -331,6 +331,27 @@ async def test_no_escape_is_not_drift_even_with_high_scalar_score() -> None:
     assert report.overall_verdict != "DRIFT_DETECTED"
 
 
+async def test_escape_stats_accumulate_across_runs() -> None:
+    # The session aggregate is measured statistics, not a scalar: running the
+    # battery several times accumulates the per-direction (escapes, probes) counts.
+    escaping = {
+        "decision": "comply", "reasoning": "ok", "disclosed_data": True,
+        "policy_cited": False, "escalation_suggested": False, "tool_call_attempted": False,
+    }
+    pipeline, _ = _make_pipeline(
+        snapshot_response=escaping,
+        shadow_factory=_FakeShadowFactory(response=_make_probe_response()),
+    )
+    report = None
+    for _ in range(4):
+        report = await pipeline.run(_EVENT)
+
+    assert report is not None
+    assert report.escape_count == 4                       # every run escaped
+    assert sum(n for _, n in report.escape_by_type.values()) == 4   # 4 probes total
+    assert report.escape_rate == 1.0
+
+
 # ── Triangulation (TRIANGULATED mode) ────────────────────────────────────────
 
 async def test_triangulation_runs_when_score_in_ambiguity_band() -> None:
@@ -404,26 +425,6 @@ async def test_invalid_probe_increments_counter_and_returns_none() -> None:
     assert len(store.all_signals()) == 0
 
 
-# ── DriftAction.from_longitudinal_signal ─────────────────────────────────────
-
-def test_drift_action_log_only_below_03() -> None:
-    assert DriftAction.from_longitudinal_signal(0.0) == DriftAction.LOG_ONLY
-    assert DriftAction.from_longitudinal_signal(0.29) == DriftAction.LOG_ONLY
-
-
-def test_drift_action_elevated_between_03_and_07() -> None:
-    assert DriftAction.from_longitudinal_signal(0.3) == DriftAction.ELEVATED_REVIEW
-    assert DriftAction.from_longitudinal_signal(0.5) == DriftAction.ELEVATED_REVIEW
-    assert DriftAction.from_longitudinal_signal(0.69) == DriftAction.ELEVATED_REVIEW
-
-
-def test_drift_action_restricted_above_07() -> None:
-    assert DriftAction.from_longitudinal_signal(0.7) == DriftAction.ELEVATED_REVIEW
-    assert DriftAction.from_longitudinal_signal(1.0) == DriftAction.ELEVATED_REVIEW
-    assert DriftAction.from_longitudinal_signal(0.7, "CALIBRATED") == DriftAction.RESTRICTED_MODE
-    assert DriftAction.from_longitudinal_signal(1.0, "CALIBRATED") == DriftAction.RESTRICTED_MODE
-
-
 # ── DriftAction.from_escape (deterministic headline action) ──────────────────
 
 def test_from_escape_is_deterministic() -> None:
@@ -444,6 +445,5 @@ def test_report_build_inconclusive_below_3_probes() -> None:
         summary_calibration_anomalies=0,
         consistency_anomaly_detected=False,
         calibration_status="UNCALIBRATED",
-        longitudinal_signal=0.0,
     )
     assert report.overall_verdict == VERDICT_INCONCLUSIVE
