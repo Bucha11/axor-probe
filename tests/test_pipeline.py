@@ -43,14 +43,11 @@ _SNAPSHOT = StateSnapshot(
     canonicalized_summary=_SUMMARY,
 )
 
-_CONSISTENT_RESPONSE: dict[str, Any] = {
-    "decision": "decline",
-    "reasoning": "policy forbids this",
-    "disclosed_data": False,
-    "policy_cited": True,
-    "escalation_suggested": False,
-    "tool_call_attempted": False,
-}
+# Raw model output (new InferenceFn contract): the probe reads fields structurally.
+_CONSISTENT_RESPONSE: dict[str, Any] = {"text": "I can't help with that.", "tool_calls": []}
+# An output that escapes structurally via a tool-call attempt (no per-probe canary
+# needed): structural_readout → tool_call_attempted=True, decision="comply".
+_ESCAPING_OUTPUT: dict[str, Any] = {"text": "done", "tool_calls": [{"name": "send_email"}]}
 
 
 def _make_probe_response(**overrides: Any) -> ProbeResponse:
@@ -287,15 +284,11 @@ async def test_integration_partial_failure_does_not_abort_o6() -> None:
 # ── DriftAction mapping ───────────────────────────────────────────────────────
 
 async def test_escape_produces_elevated_action_and_drift_verdict() -> None:
-    # The snapshot (real, possibly-tainted context) discloses and complies where
-    # the clean shadow refuses → a directional-residual escape. The verdict and
-    # action are deterministic from that escape, not from any scalar score.
-    escaping = {
-        "decision": "comply", "reasoning": "ok", "disclosed_data": True,
-        "policy_cited": False, "escalation_suggested": False, "tool_call_attempted": False,
-    }
+    # The snapshot attempts a tool where the clean shadow refuses → a directional-
+    # residual escape. The verdict and action are deterministic from that escape,
+    # not from any scalar score.
     pipeline, _ = _make_pipeline(
-        snapshot_response=escaping,
+        snapshot_response=_ESCAPING_OUTPUT,
         shadow_factory=_FakeShadowFactory(response=_make_probe_response()),  # clean: decline
     )
     report = await pipeline.run(_EVENT)
@@ -322,12 +315,8 @@ async def test_no_escape_is_not_drift_even_with_high_scalar_score() -> None:
 async def test_escape_stats_accumulate_across_runs() -> None:
     # The session aggregate is measured statistics, not a scalar: running the
     # battery several times accumulates the per-direction (escapes, probes) counts.
-    escaping = {
-        "decision": "comply", "reasoning": "ok", "disclosed_data": True,
-        "policy_cited": False, "escalation_suggested": False, "tool_call_attempted": False,
-    }
     pipeline, _ = _make_pipeline(
-        snapshot_response=escaping,
+        snapshot_response=_ESCAPING_OUTPUT,
         shadow_factory=_FakeShadowFactory(response=_make_probe_response()),
     )
     report = None
@@ -342,18 +331,12 @@ async def test_escape_stats_accumulate_across_runs() -> None:
 
 # ── Triangulation (TRIANGULATED mode) ────────────────────────────────────────
 
-_ESCAPING = {
-    "decision": "comply", "reasoning": "ok", "disclosed_data": True,
-    "policy_cited": False, "escalation_suggested": False, "tool_call_attempted": False,
-}
-
-
 async def test_triangulation_runs_on_escape_and_confirms() -> None:
     # An escape triggers triangulation. snapshot=comply, shadow=baseline=decline →
     # triangulate → DRIFT_SIGNAL → escape confirmed (not downgraded).
     pipeline, store = _make_pipeline(
         comparator=DefaultComparator(),
-        snapshot_response=_ESCAPING,
+        snapshot_response=_ESCAPING_OUTPUT,
         shadow_factory=_FakeShadowFactory(response=_make_probe_response()),
     )
     report = await pipeline.run(_EVENT)
@@ -366,20 +349,16 @@ async def test_triangulation_runs_on_escape_and_confirms() -> None:
 
 
 async def test_summary_anomaly_downgrades_escape() -> None:
-    # snapshot discloses (escape on disclosed_data) but its decision matches the
+    # snapshot escapes (attempts a tool → comply) but its decision matches the
     # no-context baseline while the shadow's decision is the odd one out →
     # SUMMARY_CALIBRATION_ANOMALY: the divergence is the lossy summary, not the
     # tainted context, so the escape is downgraded — the false-positive guard.
-    snapshot = {
-        "decision": "decline", "reasoning": "x", "disclosed_data": True,
-        "policy_cited": True, "escalation_suggested": False, "tool_call_attempted": False,
-    }
     pipeline, store = _make_pipeline(
         comparator=DefaultComparator(),
-        snapshot_response=snapshot,
+        snapshot_response=_ESCAPING_OUTPUT,                                  # comply (tool)
         shadow_factory=_FakeShadowFactory(
-            response=_make_probe_response(decision="comply", disclosed_data=False, policy_cited=False),
-            baseline=_make_probe_response(decision="decline", disclosed_data=False),
+            response=_make_probe_response(decision="decline", tool_call_attempted=False),   # shadow: decline
+            baseline=_make_probe_response(decision="comply", tool_call_attempted=True),     # baseline: comply
         ),
     )
     report = await pipeline.run(_EVENT)
@@ -397,7 +376,7 @@ async def test_triangulation_skip_on_baseline_failure_keeps_escape() -> None:
     # Baseline call fails → no triangulation result → the escape is NOT downgraded.
     pipeline, store = _make_pipeline(
         comparator=DefaultComparator(),
-        snapshot_response=_ESCAPING,
+        snapshot_response=_ESCAPING_OUTPUT,
         shadow_factory=_FakeShadowFactory(response=_make_probe_response(), fail_baseline=True),
     )
     report = await pipeline.run(_EVENT)
