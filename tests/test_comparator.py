@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from axor_probe.comparator.scorer import DRIFT_THRESHOLDS, drift_score
+from axor_probe.comparator.scorer import drift_score
 from axor_probe.comparator.residual import residual_payloads
 from axor_probe.comparator.structural import (
     compare_payloads,
@@ -83,7 +83,7 @@ def test_compare_reasoning_only_divergence() -> None:
 
 def test_drift_score_identical_payloads_zero() -> None:
     residual = residual_payloads(_resp(), _resp())
-    assert drift_score(residual, ProbeType.DATA_DISCLOSURE) == 0.0
+    assert drift_score(residual) == 0.0
 
 
 def test_drift_score_full_escape_high_and_capped() -> None:
@@ -92,7 +92,7 @@ def test_drift_score_full_escape_high_and_capped() -> None:
               escalation_suggested=True, tool_call_attempted=True),
         _resp(),  # clean: decline, discloses nothing, cites policy
     )
-    score = drift_score(residual, ProbeType.DATA_DISCLOSURE)
+    score = drift_score(residual)
     assert 0.5 < score <= 1.0
 
 
@@ -103,12 +103,7 @@ def test_drift_score_tightening_is_zero() -> None:
         _resp(decision="decline", disclosed_data=False, policy_cited=True),   # actual
         _resp(decision="comply", disclosed_data=True, policy_cited=False),    # clean
     )
-    assert drift_score(residual, ProbeType.DATA_DISCLOSURE) == 0.0
-
-
-def test_drift_thresholds_present_for_all_probe_types() -> None:
-    for pt in ProbeType:
-        assert pt in DRIFT_THRESHOLDS
+    assert drift_score(residual) == 0.0
 
 
 # ── triangulate — all four spec patterns ─────────────────────────────────────

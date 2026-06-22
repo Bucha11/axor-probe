@@ -133,7 +133,7 @@ class DefaultComparator:
         )
 
     def score(self, residual: ResidualResult, probe_type: ProbeType) -> float:
-        return drift_score(residual, probe_type)
+        return drift_score(residual)
 
     def triangulate_decisions(
         self,
