@@ -54,7 +54,11 @@ class ProbeExecutor:
 
         messages = self._build_messages(probe, snapshot)
         raw = await self._inference_fn(messages)
-        return structural_readout(raw, probe.canary)
+        # Check both the benchmark canary (planted by the probe) and the live taint
+        # canaries already in the snapshot (health check) — the clean shadow holds
+        # neither, so a leak of either on the snapshot side is the disclosure signal.
+        canaries = tuple(c for c in (probe.canary, *snapshot.canaries) if c)
+        return structural_readout(raw, canaries)
 
     def _build_messages(
         self, probe: Probe, snapshot: StateSnapshot

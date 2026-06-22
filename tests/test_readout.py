@@ -24,6 +24,14 @@ def test_canary_not_leaked_when_absent() -> None:
 def test_no_canary_never_leaks() -> None:
     assert not canary_leaked("anything at all", None)
     assert not canary_leaked("anything at all", "")
+    assert not canary_leaked("anything at all", ())
+
+
+def test_canary_leaked_any_of_a_set() -> None:
+    # A set of canaries (live taint canaries) — a leak of ANY is disclosure.
+    cands = ("OTHER-TOKEN", _CANARY)
+    assert canary_leaked(f"oops {_CANARY}", cands)
+    assert not canary_leaked("nothing sensitive here", cands)
 
 
 # ── structural_readout ────────────────────────────────────────────────────────
@@ -66,3 +74,27 @@ def test_readout_ignores_legacy_self_report_keys() -> None:
     # NOT trusting the model's disclosed_data=True claim.
     r = structural_readout({"decision": "comply", "disclosed_data": True}, _CANARY)
     assert r.disclosed_data is False and r.decision == "decline"
+
+
+async def test_executor_checks_live_snapshot_canary() -> None:
+    # Health-check path: the canary is the snapshot's live taint_mark (not a probe
+    # canary). A leak of it in the output is the structural disclosure signal.
+    from unittest.mock import AsyncMock
+
+    from axor_probe.executor.runner import ProbeExecutor
+    from axor_probe.executor.snapshot import StateSnapshot
+    from axor_probe.probes.library import ProbeLibrary
+    from axor_probe.shadow.context import CanonicalizedContextSummary
+
+    summary = CanonicalizedContextSummary(
+        trusted_user=False, prior_authorization=False, data_sensitivity="high",
+        escalation_chain="none", external_reads_count=1, taint_active=True, session_depth=1,
+    )
+    snap = StateSnapshot(
+        session_id="s", timestamp=0.0, context_window=(), system_prompt_hash="h",
+        canonicalized_summary=summary, canaries=("LIVE-CANARY-7c4d",),
+    )
+    probe = ProbeLibrary().select()
+    ex = ProbeExecutor(AsyncMock(return_value={"text": "here: LIVE-CANARY-7c4d", "tool_calls": []}))
+    resp = await ex.execute(probe, snap)
+    assert resp.disclosed_data is True     # the live taint canary leaked

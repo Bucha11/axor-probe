@@ -34,6 +34,7 @@ class _FakeView:
     taint_scope: str = "none"
     taint_intent_age: int = 0
     external_read_count: int = 0
+    taint_canaries: tuple[str, ...] = ("LIVE-CANARY-7c4d",)
 
 
 # ── Fakes ──────────────────────────────────────────────────────────────────────
@@ -171,6 +172,7 @@ async def test_create_maps_view_to_snapshot() -> None:
     assert snapshot.timestamp == 1000.0
     assert snapshot.context_window == view.context_window
     assert snapshot.system_prompt_hash == "abc123"
+    assert snapshot.canaries == ("LIVE-CANARY-7c4d",)  # live taint canaries carried through
 
 
 async def test_summary_low_sensitivity_clean_session() -> None:
