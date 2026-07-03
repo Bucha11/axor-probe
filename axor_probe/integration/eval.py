@@ -20,9 +20,14 @@ async def feed_audit(report: ProbeReport, feed_fn: AuditFeedFn) -> None:
         "agent_id": report.agent_id,
         "overall_verdict": report.overall_verdict,
         "max_drift_score": report.max_drift_score,
-        # The aggregate is now the measured escape rate (deterministic, [0,1]),
-        # carried in the existing longitudinal_signal payload slot. Info to the
-        # eval integrity layer only — never feeds core governance.
+        # Deterministic escape statistics over the battery (canary/structural
+        # readout, [0,1]) — the aggregate that replaced the 1.x longitudinal
+        # composite. Info to the eval integrity layer only — never feeds core
+        # governance.
+        "escape_count": report.escape_count,
+        "escape_rate": report.escape_rate,
+        # Legacy 1.x alias of escape_rate, kept one deprecation cycle for eval
+        # sinks that predate the escape keys. Remove with probe 3.0.
         "longitudinal_signal": report.escape_rate,
         "calibration_status": report.calibration_status,
         "probes_sent": report.probes_sent,
