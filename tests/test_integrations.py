@@ -312,3 +312,86 @@ async def test_sentinel_integration_emit_noop_without_signals() -> None:
     )
     await integration.emit(empty, DriftAction.LOG_ONLY)
     assert bridge.pending_count() == 0
+
+
+# ── cross-repo: real axor-core boundary ─────────────────────────────────────────
+
+def _axor_core_or_skip():
+    """Make the sibling axor-core checkout importable, or skip (isolated CI)."""
+    import sys
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+    for candidate in (repo_root.parent / "axor-core", Path("axor-core")):
+        if candidate.exists():
+            sys.path.insert(0, str(candidate))
+            break
+    try:
+        import axor_core  # noqa: F401
+    except ImportError:
+        pytest.skip("axor-core not available")
+    import axor_core as core
+    return core
+
+
+def test_core_watcher_satisfies_drift_sink() -> None:
+    # The canonical core-side implementation named in CoreDriftSink's docstring
+    # must structurally satisfy our protocol (P-34: matched by shape, not import).
+    _axor_core_or_skip()
+    from axor_core.node.drift_observer import BehavioralDriftWatcher
+
+    watcher = BehavioralDriftWatcher()
+    assert isinstance(watcher, CoreDriftSink)
+
+
+async def test_notify_core_delivers_to_real_watcher() -> None:
+    _axor_core_or_skip()
+    from axor_core.node.drift_observer import BehavioralDriftWatcher
+
+    await notify_core(_signal(DriftAction.ELEVATED_REVIEW), BehavioralDriftWatcher())
+    # non-enforcing watcher: no raise is the contract
+
+
+def test_core_context_tap_protocols_match() -> None:
+    # CoreContextTap must satisfy core's ContextTap, and a real core
+    # SessionContextView must satisfy our _SessionContextViewLike mirror —
+    # both directions of the observation seam, without imports in production code.
+    _axor_core_or_skip()
+    from unittest.mock import MagicMock
+
+    from axor_core.contracts.observation import ContextTap, SessionContextView
+
+    from axor_probe.integration.core_tap import CoreContextTap, _SessionContextViewLike
+
+    tap = CoreContextTap(pipeline=MagicMock(), scheduler=MagicMock())
+    assert isinstance(tap, ContextTap)
+
+    view = SessionContextView(
+        session_id="s", agent_id="a", timestamp=1.0, turn_index=2,
+        token_count=100, context_window=({"role": "user", "content": "hi"},),
+        system_prompt_hash="h", taint_active=False, external_read_count=0,
+        taint_canaries=("AXOR_CANARY_x",),
+    )
+    assert isinstance(view, _SessionContextViewLike)
+
+
+async def test_view_snapshot_factory_maps_real_core_view() -> None:
+    _axor_core_or_skip()
+    from unittest.mock import MagicMock
+
+    from axor_core.contracts.observation import SessionContextView
+
+    from axor_probe.integration.core_tap import CoreContextTap, ViewSnapshotFactory
+
+    tap = CoreContextTap(pipeline=MagicMock(), scheduler=MagicMock(evaluate=lambda e: False))
+    view = SessionContextView(
+        session_id="s", agent_id="a", timestamp=1.0, turn_index=3,
+        token_count=1200, context_window=({"role": "user", "content": "hi"},),
+        system_prompt_hash="h", taint_active=True, external_read_count=1,
+        taint_canaries=("AXOR_CANARY_x",),
+    )
+    await tap.on_context_event(view)
+    snapshot = await ViewSnapshotFactory(tap).create(MagicMock())
+    assert snapshot.canaries == ("AXOR_CANARY_x",)
+    assert snapshot.canonicalized_summary.session_depth == 3
+    assert snapshot.canonicalized_summary.taint_active is True
