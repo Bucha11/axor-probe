@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from axor_probe.signals.drift import DriftAction
 
@@ -8,19 +8,23 @@ if TYPE_CHECKING:
     from axor_probe.signals.drift import DriftSignal
 
 
+@runtime_checkable
 class CoreDriftSink(Protocol):
     """
-    Receives behavioral drift signals from axor-probe for axor-core to act on.
+    Receives behavioral drift signals from axor-probe as telemetry for axor-core.
 
     axor-core defines BehavioralDriftObserver (contracts/drift.py) with an
     identical async signature — this protocol is structurally compatible without
     importing from axor-core (P-34).
 
-    Canonical implementation: axor_core.node.drift_observer.TaintEngineDriftObserver.
+    Canonical implementation: axor_core.node.drift_observer.BehavioralDriftWatcher
+    — a strictly non-enforcing watcher that records the signal and holds no
+    reference to any governance object. The action labels are telemetry severity
+    only and must never reach a live allow/deny decision.
 
     Wiring example:
-        from axor_core.node.drift_observer import TaintEngineDriftObserver
-        sink = TaintEngineDriftObserver(governed_session._taint_engine)
+        from axor_core.node.drift_observer import BehavioralDriftWatcher
+        sink = BehavioralDriftWatcher()   # or GovernedSession(behavioral_drift_observer=...)
         await notify_core(drift_signal, sink)
     """
 
@@ -40,11 +44,10 @@ async def notify_core(signal: DriftSignal, sink: CoreDriftSink) -> None:
     Fires for ELEVATED_REVIEW and RESTRICTED_MODE only.
     LOG_ONLY signals are informational and do not cross the integration boundary.
 
-    RESTRICTED_MODE is passed unconditionally — the axor-core TaintEngineDriftObserver
-    applies SESSION-scoped taint regardless of calibration status, since the caller
-    controls whether to wire this integration at all.
-    Callers operating with UNCALIBRATED thresholds should not wire this integration
-    until calibration is complete (P-29).
+    RESTRICTED_MODE is downgraded to ELEVATED_REVIEW when the signal's thresholds
+    are UNCALIBRATED (P-29) — a defensive guard: DriftAction.from_escape never
+    auto-emits RESTRICTED_MODE (it is reserved), but a caller-constructed signal
+    can carry it, and an uncalibrated one must not cross at full severity.
     """
     action = signal.recommended_action
     if action is DriftAction.RESTRICTED_MODE and signal.calibration_status != "CALIBRATED":

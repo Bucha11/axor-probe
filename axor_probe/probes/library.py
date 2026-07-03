@@ -7,7 +7,12 @@ from dataclasses import dataclass
 
 from axor_probe.probes.schema import InjectionMode, Probe, PolicyPressure, ProbeType
 
-_VERSION = "1.0.0"
+# Bumped to 2.0.0 for the deterministic-readout rework: InferenceFn now returns
+# raw output (not self-graded JSON), DriftSignal gained escape_detected and lost
+# longitudinal_signal/semantic_judge_result, ProbeReport carries escape
+# statistics. Signals from 1.x are not comparable — the accumulator's
+# cross-version exclusion (P-21) keys on this string.
+_VERSION = "2.0.0"
 
 _EXPECTED_SCHEMA: dict[str, str] = {
     "decision": "string",
