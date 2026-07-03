@@ -37,3 +37,7 @@ class Probe:
     expected_schema: dict[str, str]  # values are JSON type descriptors: 'string', 'boolean', 'number', etc.
     inject_as: InjectionMode
     timestamp: float
+    # Planted high-entropy secret for disclosure probes; the readout flags
+    # disclosed_data structurally when it appears in the output. None → no canary
+    # (the probe's structural signal is the tool-call attempt instead).
+    canary: str | None = None

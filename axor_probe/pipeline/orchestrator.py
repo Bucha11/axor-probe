@@ -9,8 +9,8 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from axor_probe.comparator.accumulator import DriftAccumulator
-from axor_probe.comparator.scorer import ComparatorConfig, ComparisonMode, drift_score, should_triangulate
-from axor_probe.comparator.semantic import SemanticJudge, SemanticJudgeResult
+from axor_probe.comparator.residual import ResidualResult, residual_payloads
+from axor_probe.comparator.scorer import ComparisonMode, drift_score
 from axor_probe.comparator.structural import compare_payloads, ComparisonResult
 from axor_probe.comparator.triangulator import triangulate, TriangulatedResult
 from axor_probe.executor.runner import ProbeExecutor, ProbeResponse
@@ -62,7 +62,7 @@ class ShadowInstanceFactory(Protocol):
 
 
 class Comparator(Protocol):
-    """Wraps structural comparison, semantic scoring, and triangulation."""
+    """Wraps structural comparison (diagnostic), residual scoring, and triangulation."""
 
     def compare(
         self,
@@ -74,14 +74,7 @@ class Comparator(Protocol):
         structural_anomaly: StructuralAnomalyType | None,
     ) -> ComparisonResult: ...
 
-    async def score(
-        self,
-        result: ComparisonResult,
-        probe_type: ProbeType,
-        summary: CanonicalizedContextSummary | None = None,
-    ) -> tuple[float, SemanticJudgeResult]: ...
-
-    def should_triangulate(self, score: float, probe_type: ProbeType) -> bool: ...
+    def score(self, residual: ResidualResult, probe_type: ProbeType) -> float: ...
 
     def triangulate_decisions(
         self,
@@ -117,16 +110,14 @@ class DefaultShadowInstanceFactory:
 
 @dataclass
 class DefaultComparator:
-    """Wraps structural comparison + semantic judge into the Comparator interface.
+    """Wraps structural comparison + directional-residual scoring.
 
-    The semantic judge is an *inference call* and may be backed by an external
-    model. Payloads are redacted before they are handed to it (P-16/P-18) — the
-    structural divergence used for local scoring is computed on the raw payloads,
-    but nothing un-redacted leaves the process boundary.
+    `compare` produces the symmetric structural divergence — kept purely as a
+    diagnostic (which fields differ, for explainability and storage). The verdict is
+    the deterministic directional residual `snapshot \\ shadow` from `score`/the
+    residual: no LLM judge, no symmetric false positives (a tightening scores zero).
+    `triangulate_decisions` is the 3-way validity control fired on an escape.
     """
-    semantic_judge: SemanticJudge
-    redactor: PayloadRedactor = field(default_factory=PayloadRedactor)
-    config: ComparatorConfig = field(default_factory=ComparatorConfig)
 
     def compare(
         self,
@@ -141,24 +132,8 @@ class DefaultComparator:
             snapshot, shadow, probe_id, probe_type, probe_library_version, structural_anomaly
         )
 
-    async def score(
-        self,
-        result: ComparisonResult,
-        probe_type: ProbeType,
-        summary: CanonicalizedContextSummary | None = None,
-    ) -> tuple[float, SemanticJudgeResult]:
-        # Redact BEFORE the judge inference call — the judge must never see raw
-        # reasoning / disclosed content (the order used to be reversed: judge at
-        # step 7, redaction only at step 10 before storage).
-        judge_result = await self.semantic_judge.judge(
-            self.redactor.redact(result.snapshot_payload),
-            self.redactor.redact(result.shadow_payload),
-            summary,
-        )
-        return drift_score(result, probe_type, judge_result), judge_result
-
-    def should_triangulate(self, score: float, probe_type: ProbeType) -> bool:
-        return should_triangulate(score, probe_type, self.config)
+    def score(self, residual: ResidualResult, probe_type: ProbeType) -> float:
+        return drift_score(residual)
 
     def triangulate_decisions(
         self,
@@ -260,15 +235,22 @@ class ProbePipeline:
         )
         comparison.session_id = event.session_id
 
-        # Score computed once; reused for triangulation gate and final signal.
-        score, judge_result = await self.comparator.score(comparison, probe.probe_type, summary)
+        # Deterministic directional residual (snapshot \ shadow) drives the score;
+        # the symmetric comparison above is kept only as a diagnostic. Computed
+        # once, reused for the triangulation gate and the final signal.
+        residual = residual_payloads(snapshot_resp, shadow_resp)
+        score = self.comparator.score(residual, probe.probe_type)
 
-        # Step 7b: triangulate if score falls in ambiguity band
+        # Step 7b: triangulate every escape to confirm it is context-induced
+        # (DRIFT_SIGNAL) and not a shadow/summary artifact. The no-context baseline
+        # is the third leg; a SUMMARY_CALIBRATION_ANOMALY means the divergence is the
+        # lossy canonical summary, not the tainted context — so the escape is
+        # downgraded below. Deterministic false-positive guard on the residual.
         triangulation_result: TriangulatedResult | None = None
         comparison_mode = ComparisonMode.BINARY
         shadow_baseline_payload: dict[str, Any] | None = None
 
-        if self.comparator.should_triangulate(score, probe.probe_type):
+        if residual.escape_detected:
             try:
                 baseline_resp = await self.shadow_factory.execute_baseline(probe)
                 triangulation_result = self.comparator.triangulate_decisions(
@@ -291,15 +273,26 @@ class ProbePipeline:
             except Exception:
                 log.warning("TRIANGULATION_SKIPPED probe_id=%s", probe.probe_id, exc_info=True)
 
+        # The escape is downgraded to False when triangulation attributes the
+        # divergence to the lossy canonical summary (SUMMARY_CALIBRATION_ANOMALY)
+        # rather than the tainted context — a deterministic false-positive guard.
+        escape = residual.escape_detected and not (
+            triangulation_result is not None
+            and triangulation_result.classification.value == "summary_calibration_anomaly"
+        )
+
         # Step 8: score + accumulate
         comparison.drift_score = score
+        comparison.escape_detected = escape
         self.accumulator.record(comparison)
-        longitudinal = self.accumulator.longitudinal_signal()
         consistency_anomaly = self.accumulator.check_consistency_anomaly()
         self._probes_sent += 1
 
-        # Step 9: build unredacted signal
-        recommended_action = DriftAction.from_longitudinal_signal(longitudinal, self.calibration_status)
+        # Step 9: build unredacted signal. The per-probe verdict and action are the
+        # deterministic escape (triangulation-confirmed); drift_score is carried as
+        # UNCALIBRATED severity telemetry, not the headline. The session aggregate is
+        # the measured escape-rate statistics in ProbeReport, not a scalar.
+        recommended_action = DriftAction.from_escape(escape)
 
         raw_signal = DriftSignal(
             signal_id=uuid.uuid4().hex,
@@ -314,15 +307,14 @@ class ProbePipeline:
             comparator_confidence=self.shadow_factory.confidence(),
             comparison_mode=comparison_mode,
             triangulation_result=triangulation_result,
-            longitudinal_signal=longitudinal,
             field_divergences=tuple(comparison.field_divergences),
-            semantic_judge_result=judge_result,
             snapshot_payload=comparison.snapshot_payload,
             shadow_payload=comparison.shadow_payload,
             shadow_baseline_payload=shadow_baseline_payload,
             calibration_status=self.calibration_status,
             timestamp=time.time(),
             recommended_action=recommended_action,
+            escape_detected=escape,
         )
 
         # Step 10: redact — hard stop on failure; unredacted payload never persisted (O-2, O-3)
@@ -378,7 +370,6 @@ class ProbePipeline:
             summary_calibration_anomalies=self._summary_calibration_anomalies,
             consistency_anomaly_detected=consistency_anomaly,
             calibration_status=self.calibration_status,
-            longitudinal_signal=longitudinal,
         )
 
         # Step 13: integrations — parallel, partial failure does not block others (O-6)

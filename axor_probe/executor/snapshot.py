@@ -33,4 +33,9 @@ class StateSnapshot:
     context_window: tuple[dict[str, Any], ...]  # bounded selected context slice; Any because message values are provider-specific and untyped at this layer
     system_prompt_hash: str                       # hash only — never plain text
     canonicalized_summary: CanonicalizedContextSummary
+    # Live taint canaries (core's ContextFragment.taint_mark) present in this
+    # context. In a health check the probe checks whether the agent leaks one of
+    # these into its output — the clean shadow never holds them, so a leak here is
+    # the structural disclosure signal.
+    canaries: tuple[str, ...] = ()
     snapshot_id: str = field(default_factory=_new_snapshot_id)

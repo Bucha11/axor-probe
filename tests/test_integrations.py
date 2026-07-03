@@ -17,7 +17,6 @@ from unittest.mock import AsyncMock
 
 
 from axor_probe.comparator.scorer import ComparisonMode
-from axor_probe.comparator.semantic import SemanticJudgeResult
 from axor_probe.integration.core import CoreDriftSink, notify_core
 from axor_probe.integration.sentinel import (
     SentinelIntegration,
@@ -25,7 +24,12 @@ from axor_probe.integration.sentinel import (
 )
 from axor_probe.probes.schema import ProbeType
 from axor_probe.signals.drift import DriftAction, DriftSignal
-from axor_probe.signals.report import ProbeReport
+from axor_probe.signals.report import (
+    VERDICT_DRIFT_DETECTED,
+    ProbeReport,
+    difference_is_real,
+    wilson_ci,
+)
 
 
 def _probe_bridge_or_skip():
@@ -48,7 +52,10 @@ def _probe_bridge_or_skip():
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _signal(action: DriftAction, calibration_status: str = "CALIBRATED") -> DriftSignal:
+def _signal(
+    action: DriftAction, calibration_status: str = "CALIBRATED", escape_detected: bool = False,
+    probe_type: ProbeType = ProbeType.DATA_DISCLOSURE,
+) -> DriftSignal:
     return DriftSignal(
         signal_id=uuid.uuid4().hex,
         probe_id="dd_01",
@@ -56,25 +63,20 @@ def _signal(action: DriftAction, calibration_status: str = "CALIBRATED") -> Drif
         snapshot_id=uuid.uuid4().hex,
         session_id="sess-test",
         agent_id="agent-test",
-        probe_type=ProbeType.DATA_DISCLOSURE,
+        probe_type=probe_type,
         divergence_category=None,
         drift_score=0.6,
         comparator_confidence=1.0,
         comparison_mode=ComparisonMode.BINARY,
         triangulation_result=None,
-        longitudinal_signal=0.4,
         field_divergences=(),
-        semantic_judge_result=SemanticJudgeResult(
-            policy_ref_match=True,
-            decision_direction_match=True,
-            context_contradiction=False,
-        ),
         snapshot_payload={"decision": "decline"},
         shadow_payload={"decision": "decline"},
         shadow_baseline_payload=None,
         calibration_status=calibration_status,
         timestamp=time.time(),
         recommended_action=action,
+        escape_detected=escape_detected,
     )
 
 
@@ -208,8 +210,63 @@ def _report(signal: DriftSignal) -> ProbeReport:
         summary_calibration_anomalies=0,
         consistency_anomaly_detected=False,
         calibration_status=signal.calibration_status,
-        longitudinal_signal=signal.longitudinal_signal,
     )
+
+
+def _report_from(signals: list[DriftSignal]) -> ProbeReport:
+    return ProbeReport.build(
+        session_id="s", agent_id="a", model="m", probe_library_version="1.0.0",
+        drift_signals=signals, timeline=[], probes_sent=len(signals), probes_invalid=0,
+        probes_triangulated=0, summary_calibration_anomalies=0,
+        consistency_anomaly_detected=False, calibration_status="UNCALIBRATED",
+    )
+
+
+def test_escape_profile_per_attack_direction() -> None:
+    # Deterministic escape statistics over a heterogeneous battery: (escapes,
+    # probes) per attack direction — the susceptibility profile.
+    report = _report_from([
+        _signal(DriftAction.ELEVATED_REVIEW, escape_detected=True, probe_type=ProbeType.DATA_DISCLOSURE),
+        _signal(DriftAction.LOG_ONLY, escape_detected=False, probe_type=ProbeType.DATA_DISCLOSURE),
+        _signal(DriftAction.LOG_ONLY, escape_detected=False, probe_type=ProbeType.AUTHORITY_ESCALATION),
+    ])
+    assert report.escape_by_type[ProbeType.DATA_DISCLOSURE] == (1, 2)
+    assert report.escape_by_type[ProbeType.AUTHORITY_ESCALATION] == (0, 1)
+    assert report.escape_count == 1
+    assert abs(report.escape_rate - 1 / 3) < 1e-9
+    lo, hi = report.escape_rate_ci
+    assert 0.0 <= lo <= report.escape_rate <= hi <= 1.0
+    assert report.overall_verdict == VERDICT_DRIFT_DETECTED   # any escape → drift
+
+
+def test_wilson_ci_tightens_with_more_runs() -> None:
+    # Same rate 0.5, but more accumulated runs → a tighter interval.
+    lo1, hi1 = wilson_ci(1, 2)
+    lo2, hi2 = wilson_ci(50, 100)
+    assert (hi1 - lo1) > (hi2 - lo2)
+    assert wilson_ci(0, 0) == (0.0, 0.0)
+
+
+def test_difference_is_real_distinguishes_signal_from_noise() -> None:
+    # A large, well-sampled gap (5% vs 80%, n=100 each) is real.
+    assert difference_is_real(5, 100, 80, 100)
+    # The same rates but tiny n (0/1 vs 1/1) is within noise.
+    assert not difference_is_real(0, 1, 1, 1)
+    # Identical rates are never "real".
+    assert not difference_is_real(50, 100, 50, 100)
+    # Degenerate: an empty side is never significant.
+    assert not difference_is_real(0, 0, 80, 100)
+
+
+def test_report_verdict_is_escape_based_not_scalar() -> None:
+    # A deterministic escape → DRIFT_DETECTED.
+    drift = _report(_signal(DriftAction.ELEVATED_REVIEW, escape_detected=True))
+    assert drift.overall_verdict == VERDICT_DRIFT_DETECTED
+    # No escape — even though the signal carries a high telemetry drift_score (0.6,
+    # above every UNCALIBRATED threshold) — must NOT be drift. Proves the scalar is
+    # demoted: it no longer gates the headline verdict.
+    clean = _report(_signal(DriftAction.LOG_ONLY, escape_detected=False))
+    assert clean.overall_verdict != VERDICT_DRIFT_DETECTED
 
 
 async def test_sentinel_integration_emit_forwards_latest_signal() -> None:
@@ -252,7 +309,6 @@ async def test_sentinel_integration_emit_noop_without_signals() -> None:
         drift_signals=[], timeline=[], probes_sent=0, probes_invalid=0,
         probes_triangulated=0, summary_calibration_anomalies=0,
         consistency_anomaly_detected=False, calibration_status="CALIBRATED",
-        longitudinal_signal=0.0,
     )
     await integration.emit(empty, DriftAction.LOG_ONLY)
     assert bridge.pending_count() == 0

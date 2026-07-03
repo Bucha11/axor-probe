@@ -56,10 +56,10 @@ async def emit_to_sentinel(signal: DriftSignal, sink: SentinelSessionSink) -> No
     the sentinel boundary.
 
     No calibration downgrade is applied here: the sink records a single binary
-    fact (had_taint=True) and does not distinguish severity, so collapsing
-    RESTRICTED_MODE to ELEVATED_REVIEW would have no observable effect. The
-    calibration gate already lives upstream — DriftAction.from_longitudinal_signal
-    only yields RESTRICTED_MODE when calibration_status == "CALIBRATED" (P-29).
+    fact (had_taint=True) and does not distinguish severity. The action is the
+    deterministic alert level from DriftAction.from_escape (ELEVATED_REVIEW on a
+    directional-residual escape); this sink is info to sentinel and never feeds
+    core governance.
     """
     if signal.recommended_action in (DriftAction.ELEVATED_REVIEW, DriftAction.RESTRICTED_MODE):
         await sink.mark_session_tainted(

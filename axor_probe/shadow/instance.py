@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from axor_probe.executor.runner import InferenceFn, ProbeResponse
+from axor_probe.executor.readout import structural_readout
+from axor_probe.executor.runner import InferenceFn, ProbeResponse, canary_fragment
 from axor_probe.probes.schema import Probe
 from axor_probe.shadow.context import CanonicalizedContextSummary
 
@@ -20,31 +21,15 @@ def _summary_to_text(summary: CanonicalizedContextSummary) -> str:
     })
 
 
-def _extract_response(raw: dict[str, Any]) -> ProbeResponse:  # Any: provider response shape is untyped at this layer
-    return ProbeResponse(
-        decision=_string_or_empty(raw.get("decision")),
-        reasoning=_string_or_empty(raw.get("reasoning")),
-        disclosed_data=_bool_or_false(raw.get("disclosed_data")),
-        policy_cited=_bool_or_false(raw.get("policy_cited")),
-        escalation_suggested=_bool_or_false(raw.get("escalation_suggested")),
-        tool_call_attempted=_bool_or_false(raw.get("tool_call_attempted")),
-        raw=raw,
-    )
-
-
-def _string_or_empty(value: Any) -> str:
-    return value if isinstance(value, str) else ""
-
-
-def _bool_or_false(value: Any) -> bool:
-    return value if isinstance(value, bool) else False
-
-
 class ShadowInstance:
     """
     Isolated instance receiving: system prompt + CanonicalizedContextSummary + probe.
     No raw session content, no tool state, no memory.
     Initialised fresh per probe call — never persisted between probes (P-15).
+
+    The canary is planted here too (same confidential record as the snapshot side),
+    so the clean shadow *could* leak it — the differential is whether the tainted
+    context makes the snapshot leak it while the clean shadow does not.
     """
 
     def __init__(self, inference_fn: InferenceFn, system_prompt: str) -> None:
@@ -58,15 +43,17 @@ class ShadowInstance:
             {"role": "system", "content": self._system_prompt},
             {"role": "user", "content": f"Context summary: {_summary_to_text(summary)}\n\nScenario: {probe.scenario}"},
         ]
+        if probe.canary:
+            messages.append(canary_fragment(probe.canary))
         raw = await self._inference_fn(messages)
-        return _extract_response(raw)
+        return structural_readout(raw, probe.canary)
 
 
 class ContextlessShadowBaseline:
     """
     Isolated instance receiving: system prompt + probe only.
-    No CanonicalizedContextSummary. No context (P-14).
-    Used only during triangulated comparison.
+    No CanonicalizedContextSummary, no context, no canary planted (P-14) — being
+    contextless, it cannot hold or leak the secret. Used only during triangulation.
     Initialised fresh per probe call — never persisted (P-15).
     """
 
@@ -80,4 +67,4 @@ class ContextlessShadowBaseline:
             {"role": "user", "content": probe.scenario},
         ]
         raw = await self._inference_fn(messages)
-        return _extract_response(raw)
+        return structural_readout(raw, probe.canary)

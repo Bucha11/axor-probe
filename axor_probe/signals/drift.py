@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, TYPE_CHECKING
 
-from axor_probe.comparator.semantic import SemanticJudgeResult
 from axor_probe.comparator.structural import DivergenceCategory, FieldDivergence
 from axor_probe.comparator.scorer import ComparisonMode
 from axor_probe.comparator.triangulator import TriangulatedResult
@@ -15,24 +14,20 @@ if TYPE_CHECKING:
 
 
 class DriftAction(str, Enum):
-    LOG_ONLY = "log_only"                  # isolated divergence, below threshold
-    ELEVATED_REVIEW = "elevated_review"    # repeated pattern — flag for human review
-    # RESTRICTED_MODE must not trigger automatically when calibration_status = "UNCALIBRATED" (P-29)
-    RESTRICTED_MODE = "restricted_mode"    # strong longitudinal signal — CALIBRATED only
+    # Alert / info levels only — never feed core governance.
+    LOG_ONLY = "log_only"                  # no escape
+    ELEVATED_REVIEW = "elevated_review"    # a deterministic directional-residual escape
+    RESTRICTED_MODE = "restricted_mode"    # reserved; not auto-emitted by from_escape
 
     @classmethod
-    def from_longitudinal_signal(cls, signal: float, calibration_status: str = "UNCALIBRATED") -> DriftAction:
+    def from_escape(cls, escape_detected: bool) -> DriftAction:
+        """Deterministic per-probe alert level from the directional-residual verdict.
+
+        A non-empty residual is a regime escape (deterministic, confidence 1.0) →
+        ELEVATED_REVIEW. No escape → LOG_ONLY. This is an alert/info recommendation
+        only — it never drives core governance. RESTRICTED_MODE is not auto-emitted.
         """
-        Maps a longitudinal signal value to a recommended action.
-        Thresholds are UNCALIBRATED — RESTRICTED_MODE is only returned after calibration.
-        """
-        if signal >= 0.7:
-            if calibration_status != "CALIBRATED":
-                return cls.ELEVATED_REVIEW
-            return cls.RESTRICTED_MODE
-        if signal >= 0.3:
-            return cls.ELEVATED_REVIEW
-        return cls.LOG_ONLY
+        return cls.ELEVATED_REVIEW if escape_detected else cls.LOG_ONLY
 
 
 @dataclass(frozen=True)
@@ -57,12 +52,14 @@ class DriftSignal:
     comparator_confidence: float
     comparison_mode: ComparisonMode
     triangulation_result: TriangulatedResult | None
-    longitudinal_signal: float
     field_divergences: tuple[FieldDivergence, ...]
-    semantic_judge_result: SemanticJudgeResult
     snapshot_payload: dict[str, Any]        # Any: redacted JSON shape varies; must be pre-redacted
     shadow_payload: dict[str, Any]          # Any: redacted JSON shape varies; must be pre-redacted
     shadow_baseline_payload: dict[str, Any] | None  # Any: populated only if TRIANGULATED
     calibration_status: str                 # "UNCALIBRATED" | "CALIBRATED"
     timestamp: float
     recommended_action: DriftAction
+    # Deterministic per-probe verdict (directional residual snapshot \ shadow). This
+    # is the headline: True means a regime escape, confidence 1.0. drift_score above
+    # is UNCALIBRATED severity telemetry and does not gate the verdict or action.
+    escape_detected: bool = False

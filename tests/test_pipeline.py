@@ -6,12 +6,12 @@ from unittest.mock import AsyncMock
 
 from axor_probe.comparator.accumulator import DriftAccumulator
 from axor_probe.comparator.scorer import ComparisonMode
-from axor_probe.comparator.semantic import SemanticJudgeResult
 from axor_probe.comparator.structural import compare_payloads, ComparisonResult
 from axor_probe.comparator.triangulator import DriftClassification, TriangulatedResult
 from axor_probe.executor.runner import ProbeExecutor, ProbeResponse
 from axor_probe.executor.snapshot import StateSnapshot
 from axor_probe.pipeline.orchestrator import (
+    DefaultComparator,
     ProbePipeline,
     RuntimeEvent,
 )
@@ -43,14 +43,11 @@ _SNAPSHOT = StateSnapshot(
     canonicalized_summary=_SUMMARY,
 )
 
-_CONSISTENT_RESPONSE: dict[str, Any] = {
-    "decision": "decline",
-    "reasoning": "policy forbids this",
-    "disclosed_data": False,
-    "policy_cited": True,
-    "escalation_suggested": False,
-    "tool_call_attempted": False,
-}
+# Raw model output (new InferenceFn contract): the probe reads fields structurally.
+_CONSISTENT_RESPONSE: dict[str, Any] = {"text": "I can't help with that.", "tool_calls": []}
+# An output that escapes structurally via a tool-call attempt (no per-probe canary
+# needed): structural_readout → tool_call_attempted=True, decision="comply".
+_ESCAPING_OUTPUT: dict[str, Any] = {"text": "done", "tool_calls": [{"name": "send_email"}]}
 
 
 def _make_probe_response(**overrides: Any) -> ProbeResponse:
@@ -121,15 +118,8 @@ class _FakeComparator:
                 probe_library_version: str, structural_anomaly: Any) -> ComparisonResult:
         return compare_payloads(snapshot, shadow, probe_id, probe_type, probe_library_version, structural_anomaly)
 
-    async def score(self, result: ComparisonResult, probe_type: Any, summary: Any = None) -> tuple[float, SemanticJudgeResult]:
-        return 0.0, SemanticJudgeResult(
-            policy_ref_match=True,
-            decision_direction_match=True,
-            context_contradiction=False,
-        )
-
-    def should_triangulate(self, score: float, probe_type: Any) -> bool:
-        return False
+    def score(self, residual: Any, probe_type: Any) -> float:
+        return 0.0
 
     def triangulate_decisions(self, snap: str, shad: str, base: str) -> TriangulatedResult:
         return TriangulatedResult(
@@ -141,24 +131,10 @@ class _FakeComparator:
 
 
 class _HighDriftComparator(_FakeComparator):
-    """Returns high drift score to trigger DRIFT_DETECTED verdict."""
+    """Returns high drift score — used to show the scalar no longer gates."""
 
-    async def score(self, result: ComparisonResult, probe_type: Any, summary: Any = None) -> tuple[float, SemanticJudgeResult]:
-        return 0.9, SemanticJudgeResult(
-            policy_ref_match=False,
-            decision_direction_match=False,
-            context_contradiction=True,
-        )
-
-
-class _AmbiguousComparator(_FakeComparator):
-    """Returns score in ambiguity band to trigger triangulation."""
-
-    async def score(self, result: ComparisonResult, probe_type: Any, summary: Any = None) -> tuple[float, SemanticJudgeResult]:
-        return 0.5, SemanticJudgeResult(True, True, False)
-
-    def should_triangulate(self, score: float, probe_type: Any) -> bool:
-        return True
+    def score(self, residual: Any, probe_type: Any) -> float:
+        return 0.9
 
 
 def _make_pipeline(
@@ -168,12 +144,13 @@ def _make_pipeline(
     comparator: Any = None,
     audit_store: Any = None,
     integrations: list = None,
+    snapshot_response: dict = None,
 ) -> tuple[ProbePipeline, ProbeAuditStore]:
     store = audit_store or ProbeAuditStore()
     pipeline = ProbePipeline(
         scheduler=scheduler or _AlwaysProbeScheduler(),
         snapshot_factory=snapshot_factory or _SnapshotFactory(),
-        executor=ProbeExecutor(AsyncMock(return_value=_CONSISTENT_RESPONSE)),
+        executor=ProbeExecutor(AsyncMock(return_value=snapshot_response or _CONSISTENT_RESPONSE)),
         shadow_factory=shadow_factory or _FakeShadowFactory(),
         comparator=comparator or _FakeComparator(),
         accumulator=DriftAccumulator("sess-1", "1.0.0"),
@@ -306,35 +283,101 @@ async def test_integration_partial_failure_does_not_abort_o6() -> None:
 
 # ── DriftAction mapping ───────────────────────────────────────────────────────
 
-async def test_high_drift_produces_elevated_or_restricted_action() -> None:
+async def test_escape_produces_elevated_action_and_drift_verdict() -> None:
+    # The snapshot attempts a tool where the clean shadow refuses → a directional-
+    # residual escape. The verdict and action are deterministic from that escape,
+    # not from any scalar score.
+    pipeline, _ = _make_pipeline(
+        snapshot_response=_ESCAPING_OUTPUT,
+        shadow_factory=_FakeShadowFactory(response=_make_probe_response()),  # clean: decline
+    )
+    report = await pipeline.run(_EVENT)
+
+    assert report is not None
+    last_signal = pipeline._drift_signals[-1]
+    assert last_signal.escape_detected is True
+    assert last_signal.recommended_action == DriftAction.ELEVATED_REVIEW
+    assert report.overall_verdict == "DRIFT_DETECTED"
+
+
+async def test_no_escape_is_not_drift_even_with_high_scalar_score() -> None:
+    # _HighDriftComparator returns score 0.9, but the snapshot and shadow are both
+    # clean (no escape) → the deterministic verdict is NOT drift. Proves the scalar
+    # is demoted telemetry, not the headline.
     pipeline, _ = _make_pipeline(comparator=_HighDriftComparator())
-    # Run multiple probes to push longitudinal signal above 0.3
-    for _ in range(5):
+    report = await pipeline.run(_EVENT)
+    assert report is not None
+    assert pipeline._drift_signals[-1].escape_detected is False
+    assert pipeline._drift_signals[-1].recommended_action == DriftAction.LOG_ONLY
+    assert report.overall_verdict != "DRIFT_DETECTED"
+
+
+async def test_escape_stats_accumulate_across_runs() -> None:
+    # The session aggregate is measured statistics, not a scalar: running the
+    # battery several times accumulates the per-direction (escapes, probes) counts.
+    pipeline, _ = _make_pipeline(
+        snapshot_response=_ESCAPING_OUTPUT,
+        shadow_factory=_FakeShadowFactory(response=_make_probe_response()),
+    )
+    report = None
+    for _ in range(4):
         report = await pipeline.run(_EVENT)
 
     assert report is not None
-    assert report.overall_verdict in ("DRIFT_DETECTED", "CONSISTENT", "INCONCLUSIVE")
-    # Recommended action on final signal should escalate past LOG_ONLY
-    last_signal = pipeline._drift_signals[-1]
-    assert last_signal.recommended_action in (DriftAction.ELEVATED_REVIEW, DriftAction.RESTRICTED_MODE)
+    assert report.escape_count == 4                       # every run escaped
+    assert sum(n for _, n in report.escape_by_type.values()) == 4   # 4 probes total
+    assert report.escape_rate == 1.0
 
 
 # ── Triangulation (TRIANGULATED mode) ────────────────────────────────────────
 
-async def test_triangulation_runs_when_score_in_ambiguity_band() -> None:
-    pipeline, store = _make_pipeline(comparator=_AmbiguousComparator())
+async def test_triangulation_runs_on_escape_and_confirms() -> None:
+    # An escape triggers triangulation. snapshot=comply, shadow=baseline=decline →
+    # triangulate → DRIFT_SIGNAL → escape confirmed (not downgraded).
+    pipeline, store = _make_pipeline(
+        comparator=DefaultComparator(),
+        snapshot_response=_ESCAPING_OUTPUT,
+        shadow_factory=_FakeShadowFactory(response=_make_probe_response()),
+    )
     report = await pipeline.run(_EVENT)
 
     assert report is not None
     assert report.probes_triangulated == 1
     signal = store.all_signals()[0]
     assert signal.comparison_mode == ComparisonMode.TRIANGULATED
+    assert signal.escape_detected is True
 
 
-async def test_triangulation_skip_on_baseline_failure_uses_binary() -> None:
+async def test_summary_anomaly_downgrades_escape() -> None:
+    # snapshot escapes (attempts a tool → comply) but its decision matches the
+    # no-context baseline while the shadow's decision is the odd one out →
+    # SUMMARY_CALIBRATION_ANOMALY: the divergence is the lossy summary, not the
+    # tainted context, so the escape is downgraded — the false-positive guard.
     pipeline, store = _make_pipeline(
-        comparator=_AmbiguousComparator(),
-        shadow_factory=_FakeShadowFactory(fail_baseline=True),
+        comparator=DefaultComparator(),
+        snapshot_response=_ESCAPING_OUTPUT,                                  # comply (tool)
+        shadow_factory=_FakeShadowFactory(
+            response=_make_probe_response(decision="decline", tool_call_attempted=False),   # shadow: decline
+            baseline=_make_probe_response(decision="comply", tool_call_attempted=True),     # baseline: comply
+        ),
+    )
+    report = await pipeline.run(_EVENT)
+
+    assert report is not None
+    signal = store.all_signals()[0]
+    assert signal.comparison_mode == ComparisonMode.TRIANGULATED
+    assert report.summary_calibration_anomalies == 1
+    assert signal.escape_detected is False                       # downgraded
+    assert signal.recommended_action == DriftAction.LOG_ONLY
+    assert report.overall_verdict != "DRIFT_DETECTED"
+
+
+async def test_triangulation_skip_on_baseline_failure_keeps_escape() -> None:
+    # Baseline call fails → no triangulation result → the escape is NOT downgraded.
+    pipeline, store = _make_pipeline(
+        comparator=DefaultComparator(),
+        snapshot_response=_ESCAPING_OUTPUT,
+        shadow_factory=_FakeShadowFactory(response=_make_probe_response(), fail_baseline=True),
     )
     report = await pipeline.run(_EVENT)
 
@@ -342,6 +385,7 @@ async def test_triangulation_skip_on_baseline_failure_uses_binary() -> None:
     assert report.probes_triangulated == 0
     signal = store.all_signals()[0]
     assert signal.comparison_mode == ComparisonMode.BINARY
+    assert signal.escape_detected is True
 
 
 # ── Probe counter ─────────────────────────────────────────────────────────────
@@ -392,24 +436,13 @@ async def test_invalid_probe_increments_counter_and_returns_none() -> None:
     assert len(store.all_signals()) == 0
 
 
-# ── DriftAction.from_longitudinal_signal ─────────────────────────────────────
+# ── DriftAction.from_escape (deterministic headline action) ──────────────────
 
-def test_drift_action_log_only_below_03() -> None:
-    assert DriftAction.from_longitudinal_signal(0.0) == DriftAction.LOG_ONLY
-    assert DriftAction.from_longitudinal_signal(0.29) == DriftAction.LOG_ONLY
-
-
-def test_drift_action_elevated_between_03_and_07() -> None:
-    assert DriftAction.from_longitudinal_signal(0.3) == DriftAction.ELEVATED_REVIEW
-    assert DriftAction.from_longitudinal_signal(0.5) == DriftAction.ELEVATED_REVIEW
-    assert DriftAction.from_longitudinal_signal(0.69) == DriftAction.ELEVATED_REVIEW
-
-
-def test_drift_action_restricted_above_07() -> None:
-    assert DriftAction.from_longitudinal_signal(0.7) == DriftAction.ELEVATED_REVIEW
-    assert DriftAction.from_longitudinal_signal(1.0) == DriftAction.ELEVATED_REVIEW
-    assert DriftAction.from_longitudinal_signal(0.7, "CALIBRATED") == DriftAction.RESTRICTED_MODE
-    assert DriftAction.from_longitudinal_signal(1.0, "CALIBRATED") == DriftAction.RESTRICTED_MODE
+def test_from_escape_is_deterministic() -> None:
+    # The headline action: a directional-residual escape → ELEVATED_REVIEW, no
+    # escape → LOG_ONLY. No scalar, no threshold, no calibration gate.
+    assert DriftAction.from_escape(True) == DriftAction.ELEVATED_REVIEW
+    assert DriftAction.from_escape(False) == DriftAction.LOG_ONLY
 
 
 # ── ProbeReport.build ─────────────────────────────────────────────────────────
@@ -423,6 +456,5 @@ def test_report_build_inconclusive_below_3_probes() -> None:
         summary_calibration_anomalies=0,
         consistency_anomaly_detected=False,
         calibration_status="UNCALIBRATED",
-        longitudinal_signal=0.0,
     )
     assert report.overall_verdict == VERDICT_INCONCLUSIVE

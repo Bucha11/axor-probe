@@ -56,6 +56,7 @@ class _SessionContextViewLike(Protocol):
     system_prompt_hash: str
     taint_active: bool
     external_read_count: int
+    taint_canaries: tuple[str, ...]
 
 
 class CoreContextTap:
@@ -135,6 +136,7 @@ class ViewSnapshotFactory:
             context_window=tuple(view.context_window),  # pass-through
             system_prompt_hash=view.system_prompt_hash,
             canonicalized_summary=self._summarize(view),
+            canaries=tuple(getattr(view, "taint_canaries", ()) or ()),  # live taint canaries
         )
 
     @staticmethod
