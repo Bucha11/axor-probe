@@ -4,10 +4,11 @@ Two directions, both shapes-only:
 
 - `health_payload` projects a finished ProbeReport into what the plane's health
   panel renders — the node posts it out-dial, the plane stores and serves it.
-- `excision_request` maps a RepairProposal into the `pending_excision` command
-  body the plane delivers back, and `heal_outcome` folds the mandatory
-  verifying re-probe into one unit: "heal without a verifying re-probe is not
-  rendered as resolved."
+- `proposal_payload` / `proposal_from_payload` carry a RepairProposal over the
+  wire, `excision_request` maps one into the `pending_excision` command body
+  the plane delivers back, and `heal_outcome` folds the mandatory verifying
+  re-probe into one unit: "heal without a verifying re-probe is not rendered as
+  resolved."
 
 The OPERATOR triggers the heal (explicit-only, forever — a drift verdict never
 fires excision by itself).
@@ -20,10 +21,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from axor_probe.signals.report import VERDICT_DRIFT_DETECTED, VERDICTS
+from axor_probe.repair.localize import RepairProposal, RepairVerdict
+from axor_probe.signals.report import (
+    VERDICT_CONSISTENT,
+    VERDICT_DRIFT_DETECTED,
+    VERDICTS,
+)
 
 if TYPE_CHECKING:
-    from axor_probe.repair.localize import RepairProposal
     from axor_probe.signals.report import ProbeReport
 
 
@@ -33,12 +38,15 @@ __all__ = [
     "FAMILY_STATES",
     "FAMILY_UNPROBED",
     "VERDICTS",
+    "VERDICT_CONSISTENT",
     "VERDICT_DRIFT_DETECTED",
     "ExcisionNotApplicable",
     "HealOutcome",
     "excision_request",
     "heal_outcome",
     "health_payload",
+    "proposal_from_payload",
+    "proposal_payload",
 ]
 
 
@@ -126,7 +134,7 @@ def _type_value(probe_type: object) -> str:
 
 
 def excision_request(
-    proposal: "RepairProposal",
+    proposal: RepairProposal,
     excision_id: str,
     reason: str,
     operator: str,
@@ -146,13 +154,14 @@ def excision_request(
     """
     if not reason.strip():
         raise ExcisionNotApplicable("reason is required")
-    verdict = proposal.verdict.value if hasattr(proposal.verdict, "value") else str(proposal.verdict)
-    if verdict == "no_drift_from_taint":
+    verdict = _verdict_value(proposal.verdict)
+    if verdict == RepairVerdict.NO_DRIFT_FROM_TAINT.value:
         raise ExcisionNotApplicable("localizer found no taint-caused drift")
     refs = list(proposal.auto_excise)
     if include_escalated:
         refs += [r for r in proposal.escalate if r not in refs]
-    if verdict == "escalate_operator" and not include_escalated and not refs:
+    if (verdict == RepairVerdict.ESCALATE_OPERATOR.value
+            and not include_escalated and not refs):
         raise ExcisionNotApplicable(
             "proposal escalates to operator; confirm escalated fragments"
         )
@@ -164,6 +173,65 @@ def excision_request(
         "reason": reason,
         "operator": operator,
     }
+
+
+def _verdict_value(verdict: object) -> str:
+    return verdict.value if hasattr(verdict, "value") else str(verdict)
+
+
+# The proposal travels. `localize` runs node-side — it needs an escape oracle,
+# i.e. the customer's own model on a sandbox copy of the context — while the
+# operator who authorizes the cut is at the plane. So the node posts what it
+# found and the plane hands it back to `excision_request` when a human confirms.
+#
+# Both halves of that trip are defined HERE, beside the function that consumes
+# the result, for the reason the vocabulary above is: the plane must not hold a
+# second opinion about what a RepairProposal is. A plane that rebuilt the body
+# from loose JSON fields would be re-implementing the one rule this module
+# exists to enforce — that `escalate` fragments are not cut without an explicit
+# confirmation — and nothing would notice when the two answers diverged.
+def proposal_payload(proposal: RepairProposal) -> dict:
+    """Project a RepairProposal into the JSON a node posts to the plane."""
+    return {
+        "verdict": _verdict_value(proposal.verdict),
+        "drift_fragments": list(proposal.drift_fragments),
+        "excision": list(proposal.excision),
+        "auto_excise": list(proposal.auto_excise),
+        "escalate": list(proposal.escalate),
+        "recommend_quarantine_all": bool(proposal.recommend_quarantine_all),
+        "approximate": bool(proposal.approximate),
+    }
+
+
+def proposal_from_payload(payload: object) -> RepairProposal:
+    """Rebuild the RepairProposal a node posted. Raises ValueError on anything
+    that is not one — an unknown verdict included, since a verdict this module
+    does not know is one whose excision rule it cannot apply."""
+    if not isinstance(payload, dict):
+        raise ValueError("repair proposal must be an object")
+    try:
+        verdict = RepairVerdict(str(payload.get("verdict", "")))
+    except ValueError as exc:
+        raise ValueError(
+            f"verdict must be one of "
+            f"{sorted(v.value for v in RepairVerdict)}"
+        ) from exc
+
+    def refs(key: str) -> tuple[str, ...]:
+        value = payload.get(key, [])
+        if not isinstance(value, list) or not all(isinstance(r, str) for r in value):
+            raise ValueError(f"`{key}` must be a list of fragment ids")
+        return tuple(value)
+
+    return RepairProposal(
+        verdict=verdict,
+        drift_fragments=refs("drift_fragments"),
+        excision=refs("excision"),
+        auto_excise=refs("auto_excise"),
+        escalate=refs("escalate"),
+        recommend_quarantine_all=bool(payload.get("recommend_quarantine_all", False)),
+        approximate=bool(payload.get("approximate", False)),
+    )
 
 
 @dataclass(frozen=True)
@@ -188,11 +256,24 @@ def heal_outcome(
     healed_families: tuple[str, ...],
     reprobe_verdict: str,
 ) -> HealOutcome:
-    """No optimistic green: resolved only when the re-probe is consistent."""
+    """No optimistic green: resolved only when the re-probe is consistent.
+
+    The verdict is checked against the vocabulary rather than compared to a
+    string. Both matter, and the second is the one that bites: an unrecognised
+    verdict compared for equality reads as "still drifting", which is the
+    innocent-looking answer — a panel that never turns green looks cautious, so
+    a typo or a verdict this library does not know would sit there indefinitely
+    with nothing to distinguish it from an agent that really did not heal.
+    """
+    if reprobe_verdict not in VERDICTS:
+        raise ValueError(
+            f"reprobe_verdict must be one of {sorted(VERDICTS)}, "
+            f"got {reprobe_verdict!r}"
+        )
     return HealOutcome(
         excision_id=excision_id,
         operator=operator,
         healed_families=healed_families,
         reprobe_verdict=reprobe_verdict,
-        resolved=reprobe_verdict == "CONSISTENT",
+        resolved=reprobe_verdict == VERDICT_CONSISTENT,
     )

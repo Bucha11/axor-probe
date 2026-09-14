@@ -14,6 +14,8 @@ from axor_probe.integration.plane import (
     excision_request,
     heal_outcome,
     health_payload,
+    proposal_from_payload,
+    proposal_payload,
 )
 from axor_probe.probes.schema import ProbeType
 from axor_probe.repair.localize import RepairProposal, RepairVerdict
@@ -78,6 +80,59 @@ def test_heal_outcome_is_honest() -> None:
     still = heal_outcome("e1", "op_d", ("refusal drift",), "DRIFT_DETECTED")
     assert not still.resolved
     assert still.caption == "healed by op_d → re-probe: still drifting"
+
+
+def test_an_unknown_reprobe_verdict_raises_instead_of_reading_as_unhealed() -> None:
+    """Equality against a string made every unrecognised verdict `resolved=False`
+    — the answer that looks like caution and is indistinguishable from a real
+    failure to heal. It has to be loud."""
+    with pytest.raises(ValueError, match="reprobe_verdict"):
+        heal_outcome("e1", "op_d", ("refusal drift",), "CONSITENT")
+    with pytest.raises(ValueError, match="reprobe_verdict"):
+        heal_outcome("e1", "op_d", ("refusal drift",), "")
+
+
+# ── the proposal on the wire ──────────────────────────────────────────────────
+#
+# `localize` runs node-side (it needs the customer's model as an escape oracle);
+# the operator who authorizes the cut is at the plane. The proposal makes that
+# trip, and it has to arrive as the same object — a plane that rebuilt it from
+# loose fields would hold a second opinion about what `escalate` means.
+
+@pytest.mark.parametrize("proposal", [
+    _proposal(RepairVerdict.AUTO_EXCISE, auto=("f1", "f2")),
+    _proposal(RepairVerdict.ESCALATE_OPERATOR, auto=("f1",), escalate=("f2",)),
+    _proposal(RepairVerdict.NO_DRIFT_FROM_TAINT),
+])
+def test_a_proposal_survives_the_round_trip(proposal: RepairProposal) -> None:
+    assert proposal_from_payload(proposal_payload(proposal)) == proposal
+
+
+def test_the_round_trip_preserves_the_confirmation_rule() -> None:
+    """The rule that matters after the trip: escalated fragments still need an
+    explicit confirmation, and the refusal is the same refusal."""
+    posted = proposal_payload(
+        _proposal(RepairVerdict.ESCALATE_OPERATOR, escalate=("frag_m",))
+    )
+    arrived = proposal_from_payload(posted)
+    with pytest.raises(ExcisionNotApplicable):
+        excision_request(arrived, excision_id="e", reason="r", operator="op")
+    body = excision_request(
+        arrived, excision_id="e", reason="r", operator="op", include_escalated=True,
+    )
+    assert body["target_refs"] == ["frag_m"]
+
+
+@pytest.mark.parametrize("bad", [
+    "not-an-object",
+    {"verdict": "auto_excise", "auto_excise": "frag_a"},        # string, not a list
+    {"verdict": "auto_excise", "excision": [1, 2]},             # not fragment ids
+    {"verdict": "wipe_everything"},                             # not a verdict
+    {},                                                         # no verdict at all
+])
+def test_a_payload_that_is_not_a_proposal_is_refused(bad: object) -> None:
+    with pytest.raises(ValueError):
+        proposal_from_payload(bad)
 
 
 # ── health_payload (the panel projection, spec 8.2) ───────────────────────────
