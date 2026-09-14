@@ -13,6 +13,17 @@ VERDICT_DRIFT_DETECTED = "DRIFT_DETECTED"
 VERDICT_INCONCLUSIVE = "INCONCLUSIVE"
 VERDICT_CONSISTENCY_ANOMALY = "CONSISTENCY_ANOMALY"
 
+# The whole vocabulary, named here because a consumer that has to assemble it
+# from four constants has made a copy — and a copy is what goes stale. The
+# control plane validates `overall_verdict` on the health-report route against
+# this set; it kept its own literal of it until this existed to import.
+VERDICTS: frozenset[str] = frozenset({
+    VERDICT_CONSISTENT,
+    VERDICT_DRIFT_DETECTED,
+    VERDICT_INCONCLUSIVE,
+    VERDICT_CONSISTENCY_ANOMALY,
+})
+
 
 def wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
     """Wilson score interval for a binomial proportion k/n (default 95%).

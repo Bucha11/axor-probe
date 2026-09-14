@@ -8,6 +8,8 @@ import pytest
 
 from axor_probe.comparator.scorer import ComparisonMode
 from axor_probe.integration.plane import (
+    FAMILY_STATES,
+    VERDICTS,
     ExcisionNotApplicable,
     excision_request,
     heal_outcome,
@@ -178,3 +180,41 @@ def test_a_short_battery_is_inconclusive_not_clean() -> None:
     ]))
     assert payload["overall_verdict"] == "INCONCLUSIVE"
     assert {f["state"] for f in payload["families"]} == {"clean"}
+
+
+class TestTheVocabularyIsNamedHere:
+    """A consumer that assembles the vocabulary from four constants has made a
+    copy, and a copy is what goes stale. The control plane validates the health
+    report's `overall_verdict` and per-family `state` on its ingest route, and
+    kept its own literal of both until these existed to import."""
+
+    def test_the_verdict_set_is_every_verdict_the_report_can_produce(self) -> None:
+        from axor_probe.signals import report as report_module
+
+        declared = {
+            value for name, value in vars(report_module).items()
+            if name.startswith("VERDICT_") and isinstance(value, str)
+        }
+        assert VERDICTS == declared
+
+    def test_the_family_set_is_every_state_the_payload_can_carry(self) -> None:
+        from axor_probe.integration import plane as plane_module
+
+        declared = {
+            value for name, value in vars(plane_module).items()
+            if name.startswith("FAMILY_") and isinstance(value, str)
+        }
+        assert FAMILY_STATES == declared
+
+    def test_both_are_importable_from_the_plane_facing_module(self) -> None:
+        """One import for a plane: this module defines the payload the node
+        posts, so it is where a plane asks what that payload may contain."""
+        from axor_probe.integration.plane import (  # noqa: F401
+            FAMILY_STATES as states,
+        )
+        from axor_probe.integration.plane import (
+            VERDICTS as verdicts,
+        )
+
+        assert "DRIFT_DETECTED" in verdicts
+        assert "unprobed" in states

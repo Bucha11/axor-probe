@@ -20,9 +20,26 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from axor_probe.signals.report import VERDICT_DRIFT_DETECTED, VERDICTS
+
 if TYPE_CHECKING:
     from axor_probe.repair.localize import RepairProposal
     from axor_probe.signals.report import ProbeReport
+
+
+__all__ = [
+    "FAMILY_CLEAN",
+    "FAMILY_ESCAPED",
+    "FAMILY_STATES",
+    "FAMILY_UNPROBED",
+    "VERDICTS",
+    "VERDICT_DRIFT_DETECTED",
+    "ExcisionNotApplicable",
+    "HealOutcome",
+    "excision_request",
+    "heal_outcome",
+    "health_payload",
+]
 
 
 class ExcisionNotApplicable(ValueError):
@@ -36,6 +53,20 @@ class ExcisionNotApplicable(ValueError):
 FAMILY_CLEAN = "clean"
 FAMILY_ESCAPED = "escaped"
 FAMILY_UNPROBED = "unprobed"
+
+# The per-family vocabulary as a set, and the verdict vocabulary re-exported
+# beside it. This module is the plane-facing door — it defines the payload the
+# node posts — so it is the one import a plane needs to validate that payload
+# against what actually produces it, rather than against a literal of its own
+# that nothing keeps true.
+FAMILY_STATES: frozenset[str] = frozenset({
+    FAMILY_CLEAN, FAMILY_ESCAPED, FAMILY_UNPROBED,
+})
+
+# Re-exported beside the set because a plane does not only validate the verdict,
+# it RECOGNISES one: `DRIFT_DETECTED` is the value that pages a node's operator,
+# and that comparison should be against the name, not a string spelled again on
+# the other side of the wire.
 
 
 def health_payload(report: "ProbeReport") -> dict:
