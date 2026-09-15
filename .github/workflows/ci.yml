@@ -75,6 +75,21 @@ jobs:
               print(f"Version mismatch: tag={tag_version}, pyproject={pkg_version}")
               sys.exit(1)
 
+          # The version lives in two files and only pyproject was checked, so
+          # axor_probe.__version__ could ship stale — every consumer reading it,
+          # from a log line to a bug report, would name the wrong release. This
+          # exact gap opened on the 0.2.1 bump: pyproject moved, __init__ did
+          # not. axor-eval added the same check after the same near-miss.
+          init = pathlib.Path("axor_probe/__init__.py").read_text(encoding="utf-8")
+          found = re.search(r'^__version__ = "([^"]+)"', init, re.MULTILINE)
+          if not found:
+              print("axor_probe/__init__.py declares no __version__")
+              sys.exit(1)
+          if found.group(1) != pkg_version:
+              print(f"Version mismatch: __version__={found.group(1)}, "
+                    f"pyproject={pkg_version}")
+              sys.exit(1)
+
           print(f"Version check passed: {pkg_version}")
           EOF
 
