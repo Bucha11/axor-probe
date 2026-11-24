@@ -368,6 +368,38 @@ Production callers are expected to provide:
 - persistent audit backend if in-memory storage is insufficient
 - calibrated thresholds before automated enforcement
 
+## Reporting to the Control Plane
+
+A check reaches the Control Plane's health panel (Agents → context health &
+repair, and the agent's own panel) as `integration.plane.health_payload(report)`
+posted under the agent's node id. This package never talks to the plane itself;
+the agent's plane link does, and that link is axor-wrap's:
+
+```python
+from axor_probe.integration.plane import health_payload
+
+report = await pipeline.run(event)          # the pipeline above
+if report is not None:
+    await connector.post_health_check(health_payload(report))   # axor_wrap PlaneConnector
+```
+
+It lands as `POST /v1/plane/{node_id}/probe-report`. A payload may carry a
+`repair_proposal` (`repair.localize`): the plane then offers the cut, and the cut
+reaches the agent as a signed operator command — nothing is removed without a
+person.
+
+A runtime that owns its loop (axor-langchain, axor-claude, or your own loop
+recorded with `axor_wrap.observe.RunRecorder`) does not need the wiring above:
+`axor_wrap.observe.HealthCheck` runs a battery over the run's last context with
+the adapter's own inference, localizes a drift to the tool results behind it,
+and returns the payload to post.
+
+**What a check needs is the agent's model.** The probes are asked of a snapshot
+of the agent and of a clean shadow — both through the agent's own inference. An
+agent governed only by the guard proxy (`axor-proxy --guard`) is seen at its tool
+calls and never at its model, so it cannot be checked; wrap it in code. The plane
+says so for such an agent instead of "no check yet".
+
 ## Offline Calibration
 
 Before production enforcement:
